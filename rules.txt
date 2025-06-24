@@ -1,0 +1,11 @@
+# File này chứa các quy tắc để phát hiện M3U8.
+# Dòng bắt đầu bằng # sẽ được bỏ qua.
+
+# --- DẠNG WILDCARD (Mặc định, đơn giản) ---
+# Dùng * để khớp với bất kỳ chuỗi ký tự nào.
+https://*.playhbq.xyz/m3u8/*
+*playlist.m3u8
+
+# --- DẠNG REGEX (Nâng cao) ---
+# Dùng tiền tố "regex:" cho các quy tắc phức tạp.
+regex:\.m3u8?(\?|$)
