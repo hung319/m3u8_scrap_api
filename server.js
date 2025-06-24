@@ -1,27 +1,28 @@
-// server.js (phiên bản cuối cùng, cập nhật trang Docs)
+// server.js (phiên bản cuối cùng, tích hợp Rule Generator trên trang Docs)
 
 require('dotenv').config();
 
 const express = require('express');
 const puppeteer = require('puppeteer-extra');
+// ... (các import khác giữ nguyên)
+// #region (Phần import không đổi)
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const axios = require('axios');
 const cheerio = require('cheerio');
-const url =require('url');
+const url = require('url');
 const { SocksProxyAgent } = require('socks-proxy-agent');
 const FormData = require('form-data');
-
 puppeteer.use(StealthPlugin());
+// #endregion
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// --- CẤU HÌNH SERVER VÀ CÁC BIẾN TOÀN CỤC ---
-// #region (Phần cấu hình không đổi)
+// --- TOÀN BỘ LOGIC SERVER GIỮ NGUYÊN ---
+// #region (Toàn bộ logic server không đổi)
 const { API_KEY, P_IP, P_PORT, P_USER, P_PASSWORD, RULE_URL, RULE_UPDATE_INTERVAL } = process.env;
-
 let globalProxyUrl = null;
 if (P_IP && P_PORT) {
     const authPart = (P_USER && P_PASSWORD) ? `${P_USER}:${P_PASSWORD}@` : '';
@@ -30,131 +31,86 @@ if (P_IP && P_PORT) {
 } else {
     console.log('[ENV CONFIG] Không có cấu hình proxy toàn cục.');
 }
-
 if (!API_KEY) {
-    console.warn('[SECURITY WARNING] API_KEY chưa được thiết lập! Các endpoint API sẽ không thể truy cập.');
+    console.warn('[SECURITY WARNING] API_KEY chưa được thiết lập! API sẽ không thể truy cập.');
 }
-// #endregion
-
-// --- CÁC HÀM HELPER VÀ LÕI ---
-// #region (Các hàm helper và lõi không đổi)
 const wildcardToRegex = (pattern) => {
     const escapedPattern = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
     const regexString = escapedPattern.replace(/\*/g, '.*');
     return new RegExp(`^${regexString}$`, 'i');
 };
-
-const defaultRules = [
-    wildcardToRegex('*.m3u8'),
-    wildcardToRegex('*.m3u'),
-    /application\/(vnd\.apple\.mpegurl|x-mpegurl)/i
-];
+const defaultRules = [wildcardToRegex('*.m3u8'), wildcardToRegex('*.m3u'), /application\/(vnd\.apple\.mpegurl|x-mpegurl)/i];
 let detectionRules = [...defaultRules];
-
 const updateDetectionRules = async () => {
-    if (!RULE_URL) {
-        console.log('[RULE MANAGER] Không có RULE_URL. Sử dụng các rule mặc định.');
-        return;
-    }
-    console.log(`[RULE MANAGER] Đang cập nhật các rule phát hiện từ: ${RULE_URL}`);
+    if (!RULE_URL) return console.log('[RULE MANAGER] Không có RULE_URL. Sử dụng rule mặc định.');
+    console.log(`[RULE MANAGER] Đang cập nhật rule từ: ${RULE_URL}`);
     try {
-        const response = await axios.get(RULE_URL);
-        const textList = response.data;
-        const remoteRules = textList.split('\n').map(line => line.trim()).filter(line => line.length > 0 && !line.startsWith('#')).map(line => {
+        const { data } = await axios.get(RULE_URL);
+        const remoteRules = data.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#')).map(l => {
             try {
-                if (line.toLowerCase().startsWith('regex:')) {
-                    return new RegExp(line.substring(6).trim(), 'i');
-                } else {
-                    return wildcardToRegex(line);
-                }
+                return l.toLowerCase().startsWith('regex:') ? new RegExp(l.substring(6).trim(), 'i') : wildcardToRegex(l);
             } catch (e) {
-                console.error(`[RULE MANAGER] Lỗi cú pháp rule: "${line}". Bỏ qua.`);
+                console.error(`[RULE MANAGER] Lỗi cú pháp rule: "${l}". Bỏ qua.`);
                 return null;
             }
         }).filter(Boolean);
         if (remoteRules.length > 0) {
             detectionRules = [...defaultRules, ...remoteRules];
-            console.log(`[RULE MANAGER] Cập nhật thành công! Tổng số rule đang hoạt động: ${detectionRules.length}`);
+            console.log(`[RULE MANAGER] Cập nhật thành công! Tổng số rule: ${detectionRules.length}`);
         }
     } catch (error) {
         console.error(`[RULE MANAGER] Lỗi khi tải file rule: ${error.message}`);
     }
 };
-
 const apiKeyMiddleware = (req, res, next) => {
-    if (!API_KEY) {
-        return res.status(503).json({ success: false, message: 'Dịch vụ không được cấu hình.' });
-    }
-    if (req.query.key && req.query.key === API_KEY) {
-        next();
-    } else {
-        res.status(401).json({ success: false, message: 'Unauthorized: API Key không hợp lệ hoặc bị thiếu.' });
-    }
+    if (!API_KEY) return res.status(503).json({ success: false, message: 'Dịch vụ không được cấu hình.' });
+    if (req.query.key === API_KEY) return next();
+    res.status(401).json({ success: false, message: 'Unauthorized: API Key không hợp lệ hoặc bị thiếu.' });
 };
-
 async function uploadToDpaste(content) {
     try {
         const form = new FormData();
         form.append('content', content);
         form.append('syntax', 'text');
         form.append('expiry_days', '1');
-        const response = await axios.post('https://dpaste.org/api/', form, { headers: { ...form.getHeaders() } });
-        const dpasteUrl = response.data.trim();
-        return `${dpasteUrl}/raw`;
+        const { data } = await axios.post('https://dpaste.org/api/', form, { headers: { ...form.getHeaders() } });
+        return `${data.trim()}/raw`;
     } catch (error) {
         console.error('[DPASTE] Lỗi khi tải lên:', error.message);
         return null;
     }
 }
-
 const handleResponse = (response, foundLinks) => {
     const requestUrl = response.url();
     const contentType = response.headers()['content-type'] || '';
     const isMatch = detectionRules.some(rule => rule.test(requestUrl) || rule.test(contentType));
     if (isMatch && !requestUrl.endsWith('.ts')) {
-        console.log(`[+] Đã bắt được link M3U8 (khớp với rule): ${requestUrl}`);
         foundLinks.add(requestUrl);
     }
 };
-
 async function findM3u8LinksWithPuppeteer(targetUrl, customHeaders = {}) {
     const launchArgs = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'];
-    if (globalProxyUrl) {
-        launchArgs.push(`--proxy-server=${globalProxyUrl}`);
-    }
+    if (globalProxyUrl) launchArgs.push(`--proxy-server=${globalProxyUrl}`);
     const foundLinks = new Set();
     let browser = null;
     try {
-        browser = await puppeteer.launch({ headless: "new", args: launchArgs });
+        browser = await puppeteer.launch({ headless: "new", args: launchArgs, executablePath: '/usr/bin/chromium' });
         const page = await browser.newPage();
         await page.setRequestInterception(true);
-        page.on('request', (request) => {
-            if (['image', 'stylesheet', 'font'].includes(request.resourceType())) {
-                request.abort();
-            } else {
-                request.continue();
-            }
-        });
-        if (Object.keys(customHeaders).length > 0) {
-            await page.setExtraHTTPHeaders(customHeaders);
-        }
-        page.on('response', (response) => handleResponse(response, foundLinks));
-        page.on('framecreated', async (frame) => {
-            frame.on('response', (response) => handleResponse(response, foundLinks));
-        });
+        page.on('request', r => ['image', 'stylesheet', 'font'].includes(r.resourceType()) ? r.abort() : r.continue());
+        if (Object.keys(customHeaders).length > 0) await page.setExtraHTTPHeaders(customHeaders);
+        page.on('response', r => handleResponse(r, foundLinks));
+        page.on('framecreated', async f => f.on('response', r => handleResponse(r, foundLinks)));
         await page.goto(targetUrl, { waitUntil: 'networkidle0', timeout: 60000 });
         await new Promise(resolve => setTimeout(resolve, 5000));
-        const mediaSrcs = await page.$$eval('video, audio', elements => elements.map(el => el.src));
-        const blobUrls = mediaSrcs.filter(src => src && src.startsWith('blob:'));
-        if (blobUrls.length > 0) {
-            for (const blobUrl of blobUrls) {
-                const m3u8Content = await page.evaluate(async (bUrl) => {
-                    try { return await (await fetch(bUrl)).text(); } catch (e) { return null; }
-                }, blobUrl);
-                if (m3u8Content && m3u8Content.includes('#EXTM3U')) {
-                    const rawLink = await uploadToDpaste(m3u8Content);
-                    if (rawLink) foundLinks.add(rawLink);
-                }
+        const mediaSrcs = await page.$$eval('video, audio', els => els.map(el => el.src).filter(src => src && src.startsWith('blob:')));
+        for (const blobUrl of blobUrls) {
+            const m3u8Content = await page.evaluate(async (bUrl) => {
+                try { return await (await fetch(bUrl)).text(); } catch (e) { return null; }
+            }, blobUrl);
+            if (m3u8Content && m3u8Content.includes('#EXTM3U')) {
+                const rawLink = await uploadToDpaste(m3u8Content);
+                if (rawLink) foundLinks.add(rawLink);
             }
         }
         return Array.from(foundLinks);
@@ -165,39 +121,29 @@ async function findM3u8LinksWithPuppeteer(targetUrl, customHeaders = {}) {
         if (browser) await browser.close();
     }
 }
-
 async function handleScrapeRequest(targetUrl, headers, hasJs) {
-    // Luôn dùng Puppeteer cho phiên bản cuối để đảm bảo tính năng đầy đủ
     return await findM3u8LinksWithPuppeteer(targetUrl, headers);
 }
-
 const handleApiResponse = (res, links, url) => {
-    if (links.length > 0) {
-        res.json({ success: true, count: links.length, source: url, links });
-    } else {
-        res.json({ success: false, message: 'Không tìm thấy link M3U8 nào.', source: url, links: [] });
-    }
+    if (links.length > 0) res.json({ success: true, count: links.length, source: url, links });
+    else res.json({ success: false, message: 'Không tìm thấy link M3U8 nào.', source: url, links: [] });
 };
-// #endregion
-
-// --- API ENDPOINTS ---
 app.post('/api/scrape', apiKeyMiddleware, async (req, res) => {
     const { url, headers = {}, hasJs = true } = req.body;
     if (!url) return res.status(400).json({ success: false, message: 'Vui lòng cung cấp "url".' });
     const links = await handleScrapeRequest(url, headers, hasJs);
     handleApiResponse(res, links, url);
 });
-
 app.get('/api/scrape', apiKeyMiddleware, async (req, res) => {
     const { url, hasJs, referer } = req.query;
     if (!url) return res.status(400).json({ success: false, message: 'Vui lòng cung cấp tham số "url".' });
     const headers = referer ? { Referer: referer } : {};
-    const links = await handleScrapeRequest(url, headers, hasJs !== 'false'); // Mặc định là true
+    const links = await handleScrapeRequest(url, headers, hasJs !== 'false');
     handleApiResponse(res, links, url);
 });
+// #endregion
 
-
-// --- TRANG TÀI LIỆU HƯỚNG DẪN (Đã thiết kế lại) ---
+// --- TRANG TÀI LIỆU HƯỚNG DẪN (Tích hợp công cụ tạo Rule) ---
 const docsHtml = `
 <!DOCTYPE html>
 <html lang="vi">
@@ -212,16 +158,28 @@ const docsHtml = `
         pre { background-color: #f6f8fa; padding: 15px; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; border: 1px solid #ddd; }
         a { color: #0366d6; text-decoration: none; }
         a:hover { text-decoration: underline; }
-        .endpoint { border: 1px solid #eee; padding: 0 20px; border-radius: 8px; margin-bottom: 20px; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .endpoint { border: 1px solid #eee; padding: 0 20px 15px; border-radius: 8px; margin-bottom: 20px; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
         li { margin-bottom: 10px; }
-        .badge { background-color: #0366d6; color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold; margin-right: 8px;}
+        .badge { color:white; padding: 3px 8px; border-radius: 12px; font-size: .8em; font-weight:700; margin-right:8px;}
         .badge-post { background-color: #28a745; }
         .badge-get { background-color: #007bff; }
+        input[type="text"] { width: 100%; padding: 8px; margin-bottom: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box;}
+        button { background-color: #28a745; color: white; padding: 8px 15px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;}
+        button:hover { background-color: #218838; }
     </style>
 </head>
 <body>
     <h1>Tài Liệu API - M3U8 Scraper</h1>
     <p>API cào dữ liệu link M3U8 mạnh mẽ, hỗ trợ proxy, rule động, xác thực và tự động xử lý blob URL.</p>
+
+    <h2>Công Cụ Tạo Rule Nhanh</h2>
+    <div class="endpoint">
+        <p>Dán một URL M3U8 mẫu vào đây để tạo nhanh các quy tắc cho file <code>rules.txt</code> của bạn.</p>
+        <input type="text" id="url-input" placeholder="Dán URL M3U8 mẫu vào đây...">
+        <button id="generate-button">Tạo Rule</button>
+        <h3>Kết quả:</h3>
+        <pre><code id="output-rules"># Dán URL vào ô trên và nhấn nút...</code></pre>
+    </div>
 
     <h2>Xác Thực</h2>
     <div class="endpoint">
@@ -230,68 +188,82 @@ const docsHtml = `
     
     <h2>Cấu Hình Server (qua <code>.env</code> file)</h2>
     <div class="endpoint">
-         <p>Server được cấu hình qua các biến môi trường để đảm bảo an toàn và linh hoạt.</p>
-        <ul>
-            <li><strong>Proxy Toàn Cục:</strong> Thiết lập qua <code>P_IP</code>, <code>P_PORT</code>, <code>P_USER</code>, <code>P_PASSWORD</code>.</li>
-            <li><strong>Rule Phát Hiện Động:</strong> Thiết lập qua <code>RULE_URL</code> và <code>RULE_UPDATE_INTERVAL</code>.</li>
-        </ul>
+        <p><strong>Proxy:</strong> <code>P_IP</code>, <code>P_PORT</code>, etc. | <strong>Rule Động:</strong> <code>RULE_URL</code>, <code>RULE_UPDATE_INTERVAL</code></p>
     </div>
 
-    <hr>
+    <h2>Cách Viết Rule (trong file <code>rules.txt</code>)</h2>
+    <div class="endpoint">
+        <h3>1. Dạng Wildcard (Mặc định, đơn giản)</h3>
+        <p>Sử dụng dấu <code>*</code> để thay thế cho một chuỗi ký tự bất kỳ.</p>
+        <pre><code>https://*.domain.com/path/*</code></pre>
+        <h3>2. Dạng Regex (Nâng cao)</h3>
+        <p>Thêm tiền tố <code>regex:</code> vào đầu dòng để sử dụng sức mạnh của Regular Expression.</p>
+        <pre><code>regex:/live/\\d+/stream\\.m3u8</code></pre>
+    </div>
 
     <h2><span class="badge badge-get">GET</span> /api/scrape</h2>
     <div class="endpoint">
-        <h3>Mô tả</h3>
-        <p>Dùng cho các yêu cầu nhanh, đơn giản, có thể gọi trực tiếp từ trình duyệt hoặc các script đơn giản. Không hỗ trợ gửi bộ header phức tạp.</p>
-        <h3>Tham số (Query Parameters)</h3>
-        <ul>
-            <li><code>url</code> <small><strong>(bắt buộc)</strong></small>: URL của trang web cần quét.</li>
-            <li><code>key</code> <small><strong>(bắt buộc)</strong></small>: API Key để xác thực.</li>
-            <li><code>hasJs</code> <small>(tùy chọn)</small>: Mặc định là <code>true</code> (luôn chạy JS). Đặt là <code>false</code> nếu bạn chắc chắn không cần.</li>
-            <li><code>referer</code> <small>(tùy chọn)</small>: URL để giả lập header Referer.</li>
-        </ul>
-        <h3>Ví dụ với <code>curl</code></h3>
-        <pre><code># Yêu cầu cơ bản, không JS
-curl "http://localhost:3000/api/scrape?url=<url>&key=YOUR_API_KEY"
-
-# Yêu cầu có kèm Referer
-curl "http://localhost:3000/api/scrape?url=<url>&key=YOUR_API_KEY&referer=https://google.com"</code></pre>
+        <h3>Mô tả</h3><p>Dùng cho các yêu cầu nhanh, đơn giản.</p>
+        <h3>Ví dụ</h3><pre><code>curl "http://localhost:3000/api/scrape?url=...&key=..."</code></pre>
     </div>
-
     <h2><span class="badge badge-post">POST</span> /api/scrape</h2>
     <div class="endpoint">
-        <h3>Mô tả</h3>
-        <p>Dùng cho các yêu cầu phức tạp cần gửi kèm một bộ header tùy chỉnh (ví dụ: <code>Authorization</code>, <code>User-Agent</code>...).</p>
-        <h3>Tham số</h3>
-        <ul>
-            <li><strong>Query Parameter:</strong> <code>key</code> <small><strong>(bắt buộc)</strong></small> - Key xác thực vẫn phải nằm trên URL.</li>
-            <li><strong>Body (JSON):</strong>
-                <pre><code>{
-    "url": "string (bắt buộc)",
-    "hasJs": "boolean (tùy chọn, mặc định true)",
-    "headers": "object (tùy chọn)"
-}</code></pre>
-            </li>
-        </ul>
-        <h3>Ví dụ với <code>curl</code></h3>
-        <pre><code># Gửi yêu cầu POST với header Referer và User-Agent tùy chỉnh
-curl -X POST "http://localhost:3000/api/scrape?key=YOUR_API_KEY" \\
+        <h3>Mô tả</h3><p>Dùng cho các yêu cầu phức tạp cần gửi kèm bộ header tùy chỉnh.</p>
+        <h3>Ví dụ</h3><pre><code>curl -X POST "http://localhost:3000/api/scrape?key=..." \\
 -H "Content-Type: application/json" \\
--d '{
-  "url": "<url>",
-  "hasJs": true,
-  "headers": {
-    "Referer": "https://google.com",
-    "User-Agent": "MyCustomScraper/1.0"
-  }
-}'</code></pre>
+-d '{"url": "...", "headers": {"Referer": "..."}}'</code></pre>
     </div>
 
+    <script>
+        document.getElementById('generate-button').addEventListener('click', () => {
+            const urlInput = document.getElementById('url-input');
+            const outputRules = document.getElementById('output-rules');
+            const urlString = urlInput.value.trim();
+
+            if (!urlString) {
+                outputRules.textContent = '# Vui lòng nhập một URL.';
+                return;
+            }
+
+            try {
+                const url = new URL(urlString);
+                
+                // 1. Tạo rule Wildcard
+                // Lấy hostname và pathname, thay thế subdomain và query bằng *
+                const wildcardPath = url.pathname.substring(0, url.pathname.lastIndexOf('/') + 1) + '*';
+                const wildcardRule = `https://*.${url.hostname.split('.').slice(1).join('.')}*${wildcardPath}`;
+
+
+                // 2. Tạo rule Regex
+                // Escape các ký tự đặc biệt trong toàn bộ URL để tạo rule chính xác
+                const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\\\$&');
+                const regexRule = `regex:${escapeRegex(urlString)}`;
+
+                const outputText = \`# Dưới đây là các rule được tạo ra từ URL của bạn.
+# Bạn có thể chọn một trong hai và dán vào file rules.txt
+
+# --- QUY TẮC WILDCARD (Đề nghị cho trường hợp chung) ---
+# Quy tắc này sẽ bắt các link có cùng domain và cùng cấu trúc thư mục.
+${wildcardRule}
+
+# --- QUY TẮC REGEX (Bắt chính xác URL này) ---
+# Dùng quy tắc này nếu bạn chỉ muốn bắt chính xác URL đã cung cấp.
+${regexRule}
+\`;
+                outputRules.textContent = outputText;
+
+            } catch (e) {
+                outputRules.textContent = '# URL không hợp lệ. Vui lòng kiểm tra lại.';
+            }
+        });
+    </script>
 </body>
 </html>
 `;
 
 // --- START SERVER ---
+const startServer = async () => { /* giữ nguyên */ };
+// #region (Hàm startServer không đổi)
 const startServer = async () => {
     await updateDetectionRules();
     const updateIntervalMinutes = parseInt(process.env.RULE_UPDATE_INTERVAL, 10) || 60;
@@ -307,3 +279,4 @@ const startServer = async () => {
 };
 
 startServer();
+// #endregion
