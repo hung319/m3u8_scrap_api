@@ -107,75 +107,80 @@ const handleResponse = async (response, foundLinks) => {
     }
 };
 
+// Thay thế hàm này trong file server.js của bạn
+
 async function findM3u8LinksWithPuppeteer(targetUrl, customHeaders = {}) {
     console.log(`[PUPPETEER] Bắt đầu phiên làm việc cho: ${targetUrl}`);
     const launchArgs = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'];
     if (globalProxyUrl) launchArgs.push(`--proxy-server=${globalProxyUrl}`);
     
-    // Sử dụng Set để đảm bảo link không bị trùng
-    const networkLinks = new Set();
-    const blobLinksFound = new Set();
-    
+    const foundLinks = new Set();
     let browser = null;
     try {
         browser = await puppeteer.launch({ headless: "new", args: launchArgs, executablePath: '/usr/bin/chromium' });
         const page = await browser.newPage();
-
-        // --- BƯỚC 1: TẠO CẦU NỐI GIỮA BROWSER VÀ NODE.JS ---
-        // `exposeFunction` tạo ra một hàm `window.onBlobUrlCreated` trong trình duyệt
-        // mà khi gọi, nó sẽ thực thi hàm trong Node.js
-        await page.exposeFunction('onBlobUrlCreated', (blobUrl) => {
-            console.log(`[BLOB INTERCEPTOR] Đã bắt được blob URL được tạo: ${blobUrl}`);
-            blobLinksFound.add(blobUrl);
-        });
-
-        // --- BƯỚC 2: TIÊM SCRIPT CAN THIỆP VÀO TRANG ---
-        // `evaluateOnNewDocument` đảm bảo script này chạy trước mọi script của trang web
-        await page.evaluateOnNewDocument(() => {
-            // Lưu lại hàm gốc
-            const originalCreateObjectURL = URL.createObjectURL;
-            // Ghi đè hàm gốc
-            URL.createObjectURL = function(...args) {
-                // Gọi hàm gốc để lấy ra link blob
-                const blobUrl = originalCreateObjectURL.apply(this, args);
-                // Gọi hàm đã được expose để báo cho Node.js biết
-                window.onBlobUrlCreated(blobUrl);
-                // Trả về link blob để trang web hoạt động bình thường
-                return blobUrl;
-            };
-        });
-
+        
+        // ... (phần đầu hàm không đổi)
         await page.setRequestInterception(true);
         page.on('request', r => ['image', 'stylesheet', 'font'].includes(r.resourceType()) ? r.abort() : r.continue());
         if (Object.keys(customHeaders).length > 0) await page.setExtraHTTPHeaders(customHeaders);
         
-        // Săn link mạng vẫn chạy song song
-        page.on('response', r => handleResponse(r, networkLinks));
-        page.on('framecreated', async f => f.on('response', r => handleResponse(r, networkLinks)));
+        page.on('response', r => handleResponse(r, foundLinks));
+        page.on('framecreated', async f => f.on('response', r => handleResponse(r, foundLinks)));
         
         await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-        console.log('[PUPPETEER] Trang đã tải xong, chờ thêm 3 giây để hoàn tất các script.');
-        await new Promise(resolve => setTimeout(resolve, 3000)); // Chờ một chút để đảm bảo các blob đã được báo về
+        console.log('[PUPPETEER] Trang đã tải xong.');
 
-        // --- BƯỚC 3: XỬ LÝ CÁC LINK BLOB ĐÃ BẮT ĐƯỢC ---
-        if (blobLinksFound.size > 0) {
-            console.log(`[BLOB PROCESSOR] Bắt đầu xử lý ${blobLinksFound.size} link blob đã được intercept...`);
-            for (const blobUrl of blobLinksFound) {
-                const m3u8Content = await page.evaluate(async (bUrl) => {
-                    try { return await (await fetch(bUrl)).text(); } catch (e) { return null; }
-                }, blobUrl);
+        // --- TÍNH NĂNG MỚI: TỰ ĐỘNG TƯƠNG TÁC ---
+        console.log('[INTERACTION] Đang thử nhấn Play để kích hoạt video...');
+        try {
+            // Cố gắng nhấn vào chính thẻ video, đây là cách phổ biến để kích hoạt
+            // Dùng page.waitForSelector để chắc chắn thẻ video tồn tại trước khi nhấn
+            const videoElement = await page.waitForSelector('video', { timeout: 5000 });
+            if (videoElement) {
+                await videoElement.click();
+                console.log('[INTERACTION] -> Đã nhấn vào thẻ <video>.');
+            }
+        } catch (e) {
+            // Nếu không được, thử nhấn vào các nút có class hoặc aria-label chứa chữ "play"
+            try {
+                const playButton = await page.waitForSelector('[class*="play"], [aria-label*="Play"], [aria-label*="Phát"]', { timeout: 3000 });
+                 if (playButton) {
+                    await playButton.click();
+                    console.log('[INTERACTION] -> Đã nhấn vào một nút Play.');
+                }
+            } catch (e2) {
+                console.log('[INTERACTION] -> Không tìm thấy nút play rõ ràng, bỏ qua bước nhấn.');
+            }
+        }
+        
+        console.log('[INTERACTION] Chờ 5 giây sau khi tương tác để các script xử lý...');
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        
+        // --- KẾT THÚC TÍNH NĂNG MỚI ---
+
+        // Quá trình quét blob sẽ diễn ra sau khi đã tương tác
+        const blobUrls = await page.$$eval('video, audio', els => els.map(el => el.src).filter(src => src && src.startsWith('blob:')));
+        if (blobUrls.length > 0) {
+            // ... (phần xử lý blob còn lại không đổi)
+            console.log(`[BLOB SCANNER] -> Tìm thấy ${blobUrls.length} link blob tiềm năng. Bắt đầu xử lý...`);
+            for (const blobUrl of blobUrls) {
+                console.log(`[BLOB SCANNER]   - Đang xử lý blob: ${blobUrl}`);
+                const m3u8Content = await page.evaluate(async (bUrl) => { try { return await (await fetch(bUrl)).text(); } catch (e) { return null; } }, blobUrl);
                 if (m3u8Content && m3u8Content.trim().includes('#EXTM3U')) {
-                    console.log(`[BLOB PROCESSOR]   -> Nội dung từ ${blobUrl} là M3U8. Đang tải lên Dpaste...`);
+                    console.log(`[BLOB SCANNER]   -> Thành công: Nội dung blob là M3U8 hợp lệ.`);
                     const rawLink = await uploadToDpaste(m3u8Content);
-                    if (rawLink) networkLinks.add(rawLink);
+                    if (rawLink) foundLinks.add(rawLink);
+                } else {
+                    console.log(`[BLOB SCANNER]   -> Thất bại: Nội dung từ blob không phải M3U8.`);
                 }
             }
         } else {
-            console.log(`[BLOB PROCESSOR] Không có blob URL nào được tạo ra trong phiên này.`);
+            console.log(`[BLOB SCANNER] -> Không tìm thấy link blob nào sau khi tương tác.`);
         }
         
-        console.log(`[PUPPETEER] Hoàn tất. Tìm thấy tổng cộng ${networkLinks.size} link.`);
-        return Array.from(networkLinks);
+        console.log(`[PUPPETEER] Hoàn tất quá trình quét. Tìm thấy tổng cộng ${foundLinks.size} link.`);
+        return Array.from(foundLinks);
     } catch (error) {
         console.error(`[PUPPETEER] Lỗi:`, error.message);
         return [];
