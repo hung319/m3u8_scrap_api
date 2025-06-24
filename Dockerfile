@@ -5,7 +5,7 @@
 # Sử dụng --platform=$BUILDPLATFORM để đảm bảo npm install luôn chạy native trên máy build
 FROM --platform=$BUILDPLATFORM node:20-bookworm-slim AS builder
 
-LABEL author="Your Name"
+LABEL author="hung319"
 
 WORKDIR /usr/src/app
 
