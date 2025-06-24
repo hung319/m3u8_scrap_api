@@ -1,4 +1,4 @@
-// server.js (phiên bản cuối cùng, sẵn sàng cho Docker)
+// server.js (phiên bản cuối cùng, cập nhật trang Docs)
 
 require('dotenv').config();
 
@@ -7,7 +7,7 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const axios = require('axios');
 const cheerio = require('cheerio');
-const url = require('url');
+const url =require('url');
 const { SocksProxyAgent } = require('socks-proxy-agent');
 const FormData = require('form-data');
 
@@ -19,6 +19,7 @@ const PORT = process.env.PORT || 3000;
 app.use(express.json());
 
 // --- CẤU HÌNH SERVER VÀ CÁC BIẾN TOÀN CỤC ---
+// #region (Phần cấu hình không đổi)
 const { API_KEY, P_IP, P_PORT, P_USER, P_PASSWORD, RULE_URL, RULE_UPDATE_INTERVAL } = process.env;
 
 let globalProxyUrl = null;
@@ -33,7 +34,10 @@ if (P_IP && P_PORT) {
 if (!API_KEY) {
     console.warn('[SECURITY WARNING] API_KEY chưa được thiết lập! Các endpoint API sẽ không thể truy cập.');
 }
+// #endregion
 
+// --- CÁC HÀM HELPER VÀ LÕI ---
+// #region (Các hàm helper và lõi không đổi)
 const wildcardToRegex = (pattern) => {
     const escapedPattern = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
     const regexString = escapedPattern.replace(/\*/g, '.*');
@@ -77,7 +81,6 @@ const updateDetectionRules = async () => {
     }
 };
 
-// --- CÁC HÀM HELPER VÀ LÕI ---
 const apiKeyMiddleware = (req, res, next) => {
     if (!API_KEY) {
         return res.status(503).json({ success: false, message: 'Dịch vụ không được cấu hình.' });
@@ -141,7 +144,6 @@ async function findM3u8LinksWithPuppeteer(targetUrl, customHeaders = {}) {
         });
         await page.goto(targetUrl, { waitUntil: 'networkidle0', timeout: 60000 });
         await new Promise(resolve => setTimeout(resolve, 5000));
-
         const mediaSrcs = await page.$$eval('video, audio', elements => elements.map(el => el.src));
         const blobUrls = mediaSrcs.filter(src => src && src.startsWith('blob:'));
         if (blobUrls.length > 0) {
@@ -165,51 +167,143 @@ async function findM3u8LinksWithPuppeteer(targetUrl, customHeaders = {}) {
 }
 
 async function handleScrapeRequest(targetUrl, headers, hasJs) {
-    if (hasJs) {
-        return await findM3u8LinksWithPuppeteer(targetUrl, headers);
-    } else {
-        // Axios mode is not implemented in this final version for brevity, 
-        // as Puppeteer handles all cases. Can be added back if needed.
-        return await findM3u8LinksWithPuppeteer(targetUrl, headers);
-    }
+    // Luôn dùng Puppeteer cho phiên bản cuối để đảm bảo tính năng đầy đủ
+    return await findM3u8LinksWithPuppeteer(targetUrl, headers);
 }
 
-// --- API ENDPOINTS ---
-const handleApiResponse = (res, links, mode, url) => {
+const handleApiResponse = (res, links, url) => {
     if (links.length > 0) {
-        res.json({ success: true, mode, count: links.length, source: url, links });
+        res.json({ success: true, count: links.length, source: url, links });
     } else {
-        res.json({ success: false, mode, message: 'Không tìm thấy link M3U8 nào.', source: url, links: [] });
+        res.json({ success: false, message: 'Không tìm thấy link M3U8 nào.', source: url, links: [] });
     }
 };
+// #endregion
 
+// --- API ENDPOINTS ---
 app.post('/api/scrape', apiKeyMiddleware, async (req, res) => {
     const { url, headers = {}, hasJs = true } = req.body;
     if (!url) return res.status(400).json({ success: false, message: 'Vui lòng cung cấp "url".' });
     const links = await handleScrapeRequest(url, headers, hasJs);
-    handleApiResponse(res, links, hasJs ? 'puppeteer' : 'axios', url);
+    handleApiResponse(res, links, url);
 });
 
 app.get('/api/scrape', apiKeyMiddleware, async (req, res) => {
     const { url, hasJs, referer } = req.query;
     if (!url) return res.status(400).json({ success: false, message: 'Vui lòng cung cấp tham số "url".' });
     const headers = referer ? { Referer: referer } : {};
-    const links = await handleScrapeRequest(url, headers, hasJs === 'true');
-    handleApiResponse(res, links, hasJs === 'true' ? 'puppeteer' : 'axios', url);
+    const links = await handleScrapeRequest(url, headers, hasJs !== 'false'); // Mặc định là true
+    handleApiResponse(res, links, url);
 });
 
-// --- DOCS PAGE ---
-const docsHtml = `<!DOCTYPE html><html lang="vi"><head><title>API Docs - M3U8 Scraper</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.6;padding:20px;max-width:800px;margin:0 auto;color:#333}h1,h2,h3{color:#111;border-bottom:1px solid #ddd;padding-bottom:10px}code{background-color:#f4f4f4;padding:2px 6px;border-radius:4px;font-family:"Courier New",Courier,monospace}pre{background-color:#f4f4f4;padding:15px;border-radius:5px;white-space:pre-wrap;word-wrap:break-word}a{color:#007bff;text-decoration:none}a:hover{text-decoration:underline}.endpoint{border:1px solid #eee;padding:15px;border-radius:5px;margin-bottom:20px}li{margin-bottom:5px}</style></head><body><h1>Tài Liệu API - M3U8 Scraper</h1><p>API cào dữ liệu link M3U8 với hệ thống proxy, rule động, xác thực và tự động xử lý blob URL.</p><h2>Xác Thực</h2><div class="endpoint"><p>Mọi yêu cầu đến <code>/api/scrape</code> phải có tham số <code>?key=YOUR_API_KEY</code>.</p></div><h2>Cấu Hình Server (.env)</h2><div class="endpoint"><p><strong>Proxy:</strong> <code>P_IP</code>, <code>P_PORT</code>, <code>P_USER</code>, <code>P_PASSWORD</code></p><p><strong>Rule Động:</strong> <code>RULE_URL</code>, <code>RULE_UPDATE_INTERVAL</code></p></div><h2>Cách Viết Rule (rules.txt)</h2><div class="endpoint"><h3>1. Wildcard (Mặc định)</h3><pre><code>https://*.domain.com/path/*</code></pre><h3>2. Regex (Nâng cao)</h3><pre><code>regex:/live/\\d+/stream\\.m3u8</code></pre></div><h2>Endpoint</h2><div class="endpoint"><p>Sử dụng <code>GET</code> hoặc <code>POST</code> đến <code>/api/scrape</code> với các tham số <code>url</code>, <code>hasJs</code>, <code>referer</code> và <code>key</code>.</p></div></body></html>`;
+
+// --- TRANG TÀI LIỆU HƯỚNG DẪN (Đã thiết kế lại) ---
+const docsHtml = `
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Docs - M3U8 Scraper</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; padding: 20px; max-width: 900px; margin: 0 auto; color: #333; }
+        h1, h2, h3 { color: #111; border-bottom: 1px solid #ddd; padding-bottom: 10px; margin-top: 30px;}
+        code { background-color: #f4f4f4; padding: 2px 6px; border-radius: 4px; font-family: "Courier New", Courier, monospace; color: #c7254e; }
+        pre { background-color: #f6f8fa; padding: 15px; border-radius: 5px; white-space: pre-wrap; word-wrap: break-word; border: 1px solid #ddd; }
+        a { color: #0366d6; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        .endpoint { border: 1px solid #eee; padding: 0 20px; border-radius: 8px; margin-bottom: 20px; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        li { margin-bottom: 10px; }
+        .badge { background-color: #0366d6; color: white; padding: 3px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold; margin-right: 8px;}
+        .badge-post { background-color: #28a745; }
+        .badge-get { background-color: #007bff; }
+    </style>
+</head>
+<body>
+    <h1>Tài Liệu API - M3U8 Scraper</h1>
+    <p>API cào dữ liệu link M3U8 mạnh mẽ, hỗ trợ proxy, rule động, xác thực và tự động xử lý blob URL.</p>
+
+    <h2>Xác Thực</h2>
+    <div class="endpoint">
+        <p>Mọi yêu cầu đến <code>/api/scrape</code> đều phải được xác thực bằng cách thêm tham số <code>key=YOUR_API_KEY</code> vào query string.</p>
+    </div>
+    
+    <h2>Cấu Hình Server (qua <code>.env</code> file)</h2>
+    <div class="endpoint">
+         <p>Server được cấu hình qua các biến môi trường để đảm bảo an toàn và linh hoạt.</p>
+        <ul>
+            <li><strong>Proxy Toàn Cục:</strong> Thiết lập qua <code>P_IP</code>, <code>P_PORT</code>, <code>P_USER</code>, <code>P_PASSWORD</code>.</li>
+            <li><strong>Rule Phát Hiện Động:</strong> Thiết lập qua <code>RULE_URL</code> và <code>RULE_UPDATE_INTERVAL</code>.</li>
+        </ul>
+    </div>
+
+    <hr>
+
+    <h2><span class="badge badge-get">GET</span> /api/scrape</h2>
+    <div class="endpoint">
+        <h3>Mô tả</h3>
+        <p>Dùng cho các yêu cầu nhanh, đơn giản, có thể gọi trực tiếp từ trình duyệt hoặc các script đơn giản. Không hỗ trợ gửi bộ header phức tạp.</p>
+        <h3>Tham số (Query Parameters)</h3>
+        <ul>
+            <li><code>url</code> <small><strong>(bắt buộc)</strong></small>: URL của trang web cần quét.</li>
+            <li><code>key</code> <small><strong>(bắt buộc)</strong></small>: API Key để xác thực.</li>
+            <li><code>hasJs</code> <small>(tùy chọn)</small>: Mặc định là <code>true</code> (luôn chạy JS). Đặt là <code>false</code> nếu bạn chắc chắn không cần.</li>
+            <li><code>referer</code> <small>(tùy chọn)</small>: URL để giả lập header Referer.</li>
+        </ul>
+        <h3>Ví dụ với <code>curl</code></h3>
+        <pre><code># Yêu cầu cơ bản, không JS
+curl "http://localhost:3000/api/scrape?url=<url>&key=YOUR_API_KEY"
+
+# Yêu cầu có kèm Referer
+curl "http://localhost:3000/api/scrape?url=<url>&key=YOUR_API_KEY&referer=https://google.com"</code></pre>
+    </div>
+
+    <h2><span class="badge badge-post">POST</span> /api/scrape</h2>
+    <div class="endpoint">
+        <h3>Mô tả</h3>
+        <p>Dùng cho các yêu cầu phức tạp cần gửi kèm một bộ header tùy chỉnh (ví dụ: <code>Authorization</code>, <code>User-Agent</code>...).</p>
+        <h3>Tham số</h3>
+        <ul>
+            <li><strong>Query Parameter:</strong> <code>key</code> <small><strong>(bắt buộc)</strong></small> - Key xác thực vẫn phải nằm trên URL.</li>
+            <li><strong>Body (JSON):</strong>
+                <pre><code>{
+    "url": "string (bắt buộc)",
+    "hasJs": "boolean (tùy chọn, mặc định true)",
+    "headers": "object (tùy chọn)"
+}</code></pre>
+            </li>
+        </ul>
+        <h3>Ví dụ với <code>curl</code></h3>
+        <pre><code># Gửi yêu cầu POST với header Referer và User-Agent tùy chỉnh
+curl -X POST "http://localhost:3000/api/scrape?key=YOUR_API_KEY" \\
+-H "Content-Type: application/json" \\
+-d '{
+  "url": "<url>",
+  "hasJs": true,
+  "headers": {
+    "Referer": "https://google.com",
+    "User-Agent": "MyCustomScraper/1.0"
+  }
+}'</code></pre>
+    </div>
+
+</body>
+</html>
+`;
 
 // --- START SERVER ---
 const startServer = async () => {
     await updateDetectionRules();
-    const updateIntervalMinutes = parseInt(RULE_UPDATE_INTERVAL, 10) || 60;
+    const updateIntervalMinutes = parseInt(process.env.RULE_UPDATE_INTERVAL, 10) || 60;
     setInterval(updateDetectionRules, updateIntervalMinutes * 60 * 1000);
-    console.log(`[RULE MANAGER] Đã lên lịch cập nhật rule mỗi ${updateIntervalMinutes} phút.`);
+    console.log(`[RULE MANAGER] Đã lên lịch tự động cập nhật rule mỗi ${updateIntervalMinutes} phút.`);
+
     app.get('/docs', (req, res) => res.setHeader('Content-Type', 'text/html').send(docsHtml));
     app.get('/', (req, res) => res.redirect('/docs'));
-    app.listen(PORT, () => console.log(`Server đang chạy tại http://localhost:${PORT}`));
+
+    app.listen(PORT, () => {
+        console.log(`Server hoàn thiện đang chạy tại http://localhost:${PORT}`);
+    });
 };
 
 startServer();
