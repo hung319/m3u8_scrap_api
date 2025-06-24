@@ -91,12 +91,17 @@ const handleResponse = (response, foundLinks) => {
     }
 };
 async function findM3u8LinksWithPuppeteer(targetUrl, customHeaders = {}) {
+    console.log(`[PUPPETEER STEALTH MODE] Bắt đầu phiên làm việc cho: ${targetUrl}`);
     const launchArgs = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'];
     if (globalProxyUrl) launchArgs.push(`--proxy-server=${globalProxyUrl}`);
     const foundLinks = new Set();
     let browser = null;
     try {
-        browser = await puppeteer.launch({ headless: "new", args: launchArgs, executablePath: '/usr/bin/chromium' });
+        browser = await puppeteer.launch({
+            headless: "new",
+            args: launchArgs,
+            executablePath: '/usr/bin/chromium'
+        });
         const page = await browser.newPage();
         await page.setRequestInterception(true);
         page.on('request', r => ['image', 'stylesheet', 'font'].includes(r.resourceType()) ? r.abort() : r.continue());
@@ -105,14 +110,22 @@ async function findM3u8LinksWithPuppeteer(targetUrl, customHeaders = {}) {
         page.on('framecreated', async f => f.on('response', r => handleResponse(r, foundLinks)));
         await page.goto(targetUrl, { waitUntil: 'networkidle0', timeout: 60000 });
         await new Promise(resolve => setTimeout(resolve, 5000));
-        const mediaSrcs = await page.$$eval('video, audio', els => els.map(el => el.src).filter(src => src && src.startsWith('blob:')));
+
+        // --- DÒNG ĐÃ SỬA LỖI ---
+        const blobUrls = await page.$$eval('video, audio', els => els.map(el => el.src).filter(src => src && src.startsWith('blob:')));
+        
+        // Vòng lặp for bây giờ sẽ hoạt động chính xác
         for (const blobUrl of blobUrls) {
+            console.log(`[BLOB SCANNER] Đang đọc nội dung từ: ${blobUrl}`);
             const m3u8Content = await page.evaluate(async (bUrl) => {
                 try { return await (await fetch(bUrl)).text(); } catch (e) { return null; }
             }, blobUrl);
             if (m3u8Content && m3u8Content.includes('#EXTM3U')) {
+                console.log('[BLOB SCANNER] Phát hiện nội dung M3U8 từ blob. Đang tải lên Dpaste...');
                 const rawLink = await uploadToDpaste(m3u8Content);
                 if (rawLink) foundLinks.add(rawLink);
+            } else {
+                console.log(`[BLOB SCANNER] Nội dung từ ${blobUrl} không phải là M3U8 hợp lệ.`);
             }
         }
         return Array.from(foundLinks);
