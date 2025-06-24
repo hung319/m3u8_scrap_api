@@ -1,2 +1,2 @@
-https://*.playhbq.xyz/m3u8/*
-https://master-lengs.org/api/v3/hh/*/master.m3u8?*
+*://*.playhbq.xyz/m3u8/*
+*://master-lengs.org/api/v3/hh/*/master.m3u8?*
