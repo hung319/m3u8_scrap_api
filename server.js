@@ -103,6 +103,8 @@ const handleResponse = (response, foundLinks) => {
     }
 };
 
+// Thay thế hàm này trong file server.js của bạn
+
 async function findM3u8LinksWithPuppeteer(targetUrl, customHeaders = {}) {
     console.log(`[PUPPETEER STEALTH MODE] Bắt đầu phiên làm việc cho: ${targetUrl}`);
     const launchArgs = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'];
@@ -119,21 +121,54 @@ async function findM3u8LinksWithPuppeteer(targetUrl, customHeaders = {}) {
         await page.setRequestInterception(true);
         page.on('request', r => ['image', 'stylesheet', 'font'].includes(r.resourceType()) ? r.abort() : r.continue());
         if (Object.keys(customHeaders).length > 0) await page.setExtraHTTPHeaders(customHeaders);
+        
+        // Luồng 1: Săn link mạng qua response (giữ nguyên)
         page.on('response', r => handleResponse(r, foundLinks));
         page.on('framecreated', async f => f.on('response', r => handleResponse(r, foundLinks)));
+        
         await page.goto(targetUrl, { waitUntil: 'networkidle0', timeout: 60000 });
+        console.log('[PUPPETEER] Trang đã tải xong, chờ 5 giây cho các script chạy...');
         await new Promise(resolve => setTimeout(resolve, 5000));
 
-        const mediaSrcs = await page.$$eval('video, audio', els => els.map(el => el.src).filter(src => src && src.startsWith('blob:')));
-        for (const blobUrl of mediaSrcs) { // Sửa lỗi ở đây
+        // --- BỔ SUNG LOG CHI TIẾT CHO VIỆC XỬ LÝ BLOB ---
+        
+        // Log khi bắt đầu quét
+        console.log('[BLOB SCANNER] Bắt đầu quét các thẻ media để tìm link blob...');
+        const blobUrls = await page.$$eval('video, audio', els => els.map(el => el.src).filter(src => src && src.startsWith('blob:')));
+        
+        // Log số lượng tìm thấy
+        if (blobUrls.length > 0) {
+            console.log(`[BLOB SCANNER] -> Tìm thấy ${blobUrls.length} link blob tiềm năng. Bắt đầu xử lý...`);
+        } else {
+            console.log('[BLOB SCANNER] -> Không tìm thấy thẻ video/audio nào có link blob trên trang.');
+        }
+
+        // Luồng 2: Săn và xử lý từng link blob
+        for (const blobUrl of blobUrls) {
+            // Log khi xử lý từng blob cụ thể
+            console.log(`[BLOB SCANNER]   - Đang xử lý blob: ${blobUrl}`);
             const m3u8Content = await page.evaluate(async (bUrl) => {
-                try { return await (await fetch(bUrl)).text(); } catch (e) { return null; }
+                try { 
+                    const response = await fetch(bUrl);
+                    return await response.text();
+                } catch (e) { 
+                    return null; 
+                }
             }, blobUrl);
-            if (m3u8Content && m3u8Content.includes('#EXTM3U')) {
+
+            // Log kết quả đọc nội dung
+            if (m3u8Content && m3u8Content.trim().includes('#EXTM3U')) {
+                console.log(`[BLOB SCANNER]   -> Thành công: Nội dung blob là M3U8 hợp lệ. Đang tải lên Dpaste...`);
                 const rawLink = await uploadToDpaste(m3u8Content);
-                if (rawLink) foundLinks.add(rawLink);
+                if (rawLink) {
+                    foundLinks.add(rawLink);
+                }
+            } else {
+                console.log(`[BLOB SCANNER]   -> Thất bại: Nội dung từ blob không phải M3U8 hoặc không đọc được.`);
             }
         }
+        
+        console.log(`[PUPPETEER] Hoàn tất quá trình quét. Tìm thấy tổng cộng ${foundLinks.size} link.`);
         return Array.from(foundLinks);
     } catch (error) {
         console.error(`[PUPPETEER] Lỗi:`, error.message);
