@@ -1,19 +1,17 @@
-// server.js (phiên bản cuối cùng, tích hợp Rule Generator trên trang Docs)
+// server.js (phiên bản cuối cùng, đã sửa lỗi SyntaxError)
 
 require('dotenv').config();
 
 const express = require('express');
 const puppeteer = require('puppeteer-extra');
-// ... (các import khác giữ nguyên)
-// #region (Phần import không đổi)
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const url = require('url');
 const { SocksProxyAgent } = require('socks-proxy-agent');
 const FormData = require('form-data');
+
 puppeteer.use(StealthPlugin());
-// #endregion
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -35,7 +33,7 @@ if (!API_KEY) {
     console.warn('[SECURITY WARNING] API_KEY chưa được thiết lập! API sẽ không thể truy cập.');
 }
 const wildcardToRegex = (pattern) => {
-    const escapedPattern = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&');
+    const escapedPattern = pattern.replace(/[.+?^<span class="math-inline">\{\}\(\)\|\[\\\]\\\\\]/g, '\\\\</span>&');
     const regexString = escapedPattern.replace(/\*/g, '.*');
     return new RegExp(`^${regexString}$`, 'i');
 };
@@ -143,7 +141,7 @@ app.get('/api/scrape', apiKeyMiddleware, async (req, res) => {
 });
 // #endregion
 
-// --- TRANG TÀI LIỆU HƯỚNG DẪN (Tích hợp công cụ tạo Rule) ---
+// --- TRANG TÀI LIỆU HƯỚNG DẪN (Đã sửa lỗi cú pháp) ---
 const docsHtml = `
 <!DOCTYPE html>
 <html lang="vi">
@@ -181,38 +179,9 @@ const docsHtml = `
         <pre><code id="output-rules"># Dán URL vào ô trên và nhấn nút...</code></pre>
     </div>
 
-    <h2>Xác Thực</h2>
-    <div class="endpoint">
-        <p>Mọi yêu cầu đến <code>/api/scrape</code> đều phải được xác thực bằng cách thêm tham số <code>key=YOUR_API_KEY</code> vào query string.</p>
-    </div>
-    
-    <h2>Cấu Hình Server (qua <code>.env</code> file)</h2>
-    <div class="endpoint">
-        <p><strong>Proxy:</strong> <code>P_IP</code>, <code>P_PORT</code>, etc. | <strong>Rule Động:</strong> <code>RULE_URL</code>, <code>RULE_UPDATE_INTERVAL</code></p>
-    </div>
-
-    <h2>Cách Viết Rule (trong file <code>rules.txt</code>)</h2>
-    <div class="endpoint">
-        <h3>1. Dạng Wildcard (Mặc định, đơn giản)</h3>
-        <p>Sử dụng dấu <code>*</code> để thay thế cho một chuỗi ký tự bất kỳ.</p>
-        <pre><code>https://*.domain.com/path/*</code></pre>
-        <h3>2. Dạng Regex (Nâng cao)</h3>
-        <p>Thêm tiền tố <code>regex:</code> vào đầu dòng để sử dụng sức mạnh của Regular Expression.</p>
-        <pre><code>regex:/live/\\d+/stream\\.m3u8</code></pre>
-    </div>
-
-    <h2><span class="badge badge-get">GET</span> /api/scrape</h2>
-    <div class="endpoint">
-        <h3>Mô tả</h3><p>Dùng cho các yêu cầu nhanh, đơn giản.</p>
-        <h3>Ví dụ</h3><pre><code>curl "http://localhost:3000/api/scrape?url=...&key=..."</code></pre>
-    </div>
-    <h2><span class="badge badge-post">POST</span> /api/scrape</h2>
-    <div class="endpoint">
-        <h3>Mô tả</h3><p>Dùng cho các yêu cầu phức tạp cần gửi kèm bộ header tùy chỉnh.</p>
-        <h3>Ví dụ</h3><pre><code>curl -X POST "http://localhost:3000/api/scrape?key=..." \\
+    <h2>Xác Thực</h2><div class="endpoint"><p>Mọi yêu cầu đến <code>/api/scrape</code> đều phải được xác thực bằng cách thêm tham số <code>key=YOUR_API_KEY</code> vào query string.</p></div><h2>Cấu Hình Server (.env)</h2><div class="endpoint"><p><strong>Proxy:</strong> <code>P_IP</code>, <code>P_PORT</code>, etc. | <strong>Rule Động:</strong> <code>RULE_URL</code>, <code>RULE_UPDATE_INTERVAL</code></p></div><h2>Cách Viết Rule (trong file <code>rules.txt</code>)</h2><div class="endpoint"><h3>1. Dạng Wildcard (Mặc định, đơn giản)</h3><p>Sử dụng dấu <code>*</code> để thay thế cho một chuỗi ký tự bất kỳ.</p><pre><code>https://*.domain.com/path/*</code></pre><h3>2. Dạng Regex (Nâng cao)</h3><p>Thêm tiền tố <code>regex:</code> vào đầu dòng để sử dụng sức mạnh của Regular Expression.</p><pre><code>regex:/live/\\d+/stream\\.m3u8</code></pre></div><h2><span class="badge badge-get">GET</span> /api/scrape</h2><div class="endpoint"><h3>Mô tả</h3><p>Dùng cho các yêu cầu nhanh, đơn giản.</p><h3>Ví dụ</h3><pre><code>curl "http://localhost:3000/api/scrape?url=...&key=..."</code></pre></div><h2><span class="badge badge-post">POST</span> /api/scrape</h2><div class="endpoint"><h3>Mô tả</h3><p>Dùng cho các yêu cầu phức tạp cần gửi kèm bộ header tùy chỉnh.</p><h3>Ví dụ</h3><pre><code>curl -X POST "http://localhost:3000/api/scrape?key=..." \\
 -H "Content-Type: application/json" \\
--d '{"url": "...", "headers": {"Referer": "..."}}'</code></pre>
-    </div>
+-d '{"url": "...", "headers": {"Referer": "..."}}'</code></pre></div>
 
     <script>
         document.getElementById('generate-button').addEventListener('click', () => {
@@ -227,29 +196,16 @@ const docsHtml = `
 
             try {
                 const url = new URL(urlString);
-                
-                // 1. Tạo rule Wildcard
-                // Lấy hostname và pathname, thay thế subdomain và query bằng *
                 const wildcardPath = url.pathname.substring(0, url.pathname.lastIndexOf('/') + 1) + '*';
-                const wildcardRule = `https://*.${url.hostname.split('.').slice(1).join('.')}*${wildcardPath}`;
+                const wildcardRule = \`https://*.<span class="math-inline">\{url\.hostname\.split\('\.'\)\.slice\(1\)\.join\('\.'\)\}\*\\</span>{wildcardPath}\`;
 
-
-                // 2. Tạo rule Regex
-                // Escape các ký tự đặc biệt trong toàn bộ URL để tạo rule chính xác
                 const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, '\\\\$&');
-                const regexRule = `regex:${escapeRegex(urlString)}`;
+                const regexRule = \`regex:\${escapeRegex(urlString)}\`;
 
-                const outputText = \`# Dưới đây là các rule được tạo ra từ URL của bạn.
-# Bạn có thể chọn một trong hai và dán vào file rules.txt
-
-# --- QUY TẮC WILDCARD (Đề nghị cho trường hợp chung) ---
-# Quy tắc này sẽ bắt các link có cùng domain và cùng cấu trúc thư mục.
-${wildcardRule}
-
-# --- QUY TẮC REGEX (Bắt chính xác URL này) ---
-# Dùng quy tắc này nếu bạn chỉ muốn bắt chính xác URL đã cung cấp.
-${regexRule}
-\`;
+                // --- ĐÂY LÀ CHỖ SỬA LỖI ---
+                // Chúng ta phải escape các dấu ` bên trong chuỗi outputText
+                const outputText = \`# Dưới đây là các rule được tạo ra từ URL của bạn.\\n# Bạn có thể chọn một trong hai và dán vào file rules.txt\\n\\n# --- QUY TẮC WILDCARD (Đề nghị cho trường hợp chung) ---\\n# Quy tắc này sẽ bắt các link có cùng domain và cùng cấu trúc thư mục.\\n\${wildcardRule}\\n\\n# --- QUY TẮC REGEX (Bắt chính xác URL này) ---\\n# Dùng quy tắc này nếu bạn chỉ muốn bắt chính xác URL đã cung cấp.\\n\${regexRule}\`;
+                
                 outputRules.textContent = outputText;
 
             } catch (e) {
@@ -262,21 +218,14 @@ ${regexRule}
 `;
 
 // --- START SERVER ---
-const startServer = async () => { /* giữ nguyên */ };
-// #region (Hàm startServer không đổi)
 const startServer = async () => {
     await updateDetectionRules();
     const updateIntervalMinutes = parseInt(process.env.RULE_UPDATE_INTERVAL, 10) || 60;
     setInterval(updateDetectionRules, updateIntervalMinutes * 60 * 1000);
     console.log(`[RULE MANAGER] Đã lên lịch tự động cập nhật rule mỗi ${updateIntervalMinutes} phút.`);
-
     app.get('/docs', (req, res) => res.setHeader('Content-Type', 'text/html').send(docsHtml));
     app.get('/', (req, res) => res.redirect('/docs'));
-
-    app.listen(PORT, () => {
-        console.log(`Server hoàn thiện đang chạy tại http://localhost:${PORT}`);
-    });
+    app.listen(PORT, () => console.log(`Server hoàn thiện đang chạy tại http://localhost:${PORT}`));
 };
 
 startServer();
-// #endregion
