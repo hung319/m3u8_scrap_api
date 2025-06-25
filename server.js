@@ -6,7 +6,8 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const axios = require('axios');
 const url = require('url');
 const { SocksProxyAgent } = require('socks-proxy-agent');
-const FormData = require('form-data');
+// FormData không còn cần thiết nữa
+// const FormData = require('form-data');
 
 puppeteer.use(StealthPlugin());
 
@@ -50,19 +51,8 @@ const apiKeyMiddleware = (req, res, next) => {
     res.status(401).json({ success: false, message: 'Unauthorized: API Key không hợp lệ hoặc bị thiếu.' });
 };
 
-async function uploadToDpaste(content) {
-    try {
-        const form = new FormData();
-        form.append('content', content);
-        form.append('syntax', 'text');
-        form.append('expiry_days', '1');
-        const { data } = await axios.post('https://dpaste.org/api/', form, { headers: { ...form.getHeaders() } });
-        return `${data.trim()}/raw`;
-    } catch (error) {
-        console.error('[DPASTE] Lỗi khi tải lên:', error.message);
-        return null;
-    }
-}
+// --- LOẠI BỎ HOÀN TOÀN --- Hàm uploadToDpaste không còn cần thiết
+// async function uploadToDpaste(content) { ... }
 
 const handleResponse = (response, foundLinks) => {
     const requestUrl = response.url();
@@ -75,12 +65,13 @@ const handleResponse = (response, foundLinks) => {
     }
 };
 
-// --- LOGIC SCRAPE CHÍNH (LOGIC LAI CUỐI CÙNG) ---
+// --- LOGIC SCRAPE CHÍNH (TRẢ VỀ NỘI DUNG BLOB TRỰC TIẾP) ---
 async function handleScrapeRequest(targetUrl, headers) {
     if (!browserInstance) throw new Error("Trình duyệt chưa sẵn sàng.");
 
     let page = null;
     const foundLinks = new Set();
+    const foundContents = new Set(); // --- THÊM MỚI ---: Set để lưu nội dung blob
     console.log(`[PAGE] Đang mở trang mới cho: ${targetUrl}`);
 
     try {
@@ -94,13 +85,11 @@ async function handleScrapeRequest(targetUrl, headers) {
         // --- GIAI ĐOẠN 1: Lắng nghe thụ động để tìm link mạng ---
         console.log('[GIAI ĐOẠN 1] Đang lắng nghe link mạng...');
         await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-        
-        // Chờ thêm một khoảng thời gian ngắn để các script chạy xong
-        await new Promise(resolve => setTimeout(resolve, 8000)); 
+        await new Promise(resolve => setTimeout(resolve, 8000));
 
         if (foundLinks.size > 0) {
             console.log('[THÀNH CÔNG GĐ1] Tìm thấy link mạng! Trả về ngay.');
-            return Array.from(foundLinks);
+            return { links: Array.from(foundLinks), contents: [] }; // Trả về cấu trúc object
         }
 
         // --- GIAI ĐOẠN 2: Kích hoạt chế độ bắt BLOB nếu GĐ1 thất bại ---
@@ -122,39 +111,37 @@ async function handleScrapeRequest(targetUrl, headers) {
             };
         });
 
-        // Tải lại trang với cơ chế bắt blob đã được kích hoạt
         await page.reload({ waitUntil: 'networkidle2', timeout: 60000 });
-        await new Promise(resolve => setTimeout(resolve, 5000)); // Chờ blob được tạo
+        await new Promise(resolve => setTimeout(resolve, 5000));
 
         if (interceptedBlobUrls.size > 0) {
-            const processedLinks = new Set();
-            console.log(`[BLOB SCANNER] Tìm thấy ${interceptedBlobUrls.size} blob. Đang xử lý...`);
+            console.log(`[BLOB SCANNER] Tìm thấy ${interceptedBlobUrls.size} blob. Đang lấy nội dung...`);
             for (const blobUrl of interceptedBlobUrls) {
                 const blobContent = await page.evaluate(async (bUrl) => {
                     try {
                         const response = await fetch(bUrl);
-                        return await response.text();
+                        // Chỉ lấy nội dung nếu response thành công
+                        if (response.ok) return await response.text();
+                        return null;
                     } catch (e) {
                         return null;
                     }
                 }, blobUrl);
 
                 if (blobContent) {
-                    console.log(`[BLOB SCANNER] Lấy được nội dung từ ${blobUrl}. Đang đăng tải...`);
-                    const rawLink = await uploadToDpaste(blobContent);
-                    if (rawLink) {
-                        console.log(`[BLOB SCANNER] Đăng tải thành công: ${rawLink}`);
-                        processedLinks.add(rawLink);
-                    }
+                    console.log(`[BLOB SCANNER] Lấy thành công nội dung từ ${blobUrl}.`);
+                    foundContents.add(blobContent);
                 }
             }
-            return Array.from(processedLinks);
         }
 
-        return []; // Trả về mảng rỗng nếu cả 2 giai đoạn đều thất bại
+        // Trả về tất cả những gì tìm được (links và contents)
+        return { links: Array.from(foundLinks), contents: Array.from(foundContents) };
     } catch (error) {
-        console.error(`[PAGE] Lỗi khi xử lý trang ${targetUrl}:`, error.message);
-        return [];
+        // Đảm bảo log lỗi đầy đủ để debug
+        console.error(`[PAGE] Lỗi nghiêm trọng khi xử lý trang ${targetUrl}:`, error);
+        // Trả về cấu trúc lỗi nhất quán
+        return { links: [], contents: [], error: error.message };
     } finally {
         if (page) await page.close();
         console.log(`[PAGE] Đã đóng trang cho: ${targetUrl}`);
@@ -167,22 +154,50 @@ app.get('/api/scrape', apiKeyMiddleware, async (req, res) => {
     const { url, referer } = req.query;
     if (!url) return res.status(400).json({ success: false, message: 'Vui lòng cung cấp tham số "url".' });
     const headers = referer ? { Referer: referer } : {};
-    const links = await handleScrapeRequest(url, headers);
-    handleApiResponse(res, links, url);
+    const result = await handleScrapeRequest(url, headers);
+    handleApiResponse(res, result, url);
 });
 app.post('/api/scrape', apiKeyMiddleware, async (req, res) => {
     const { url, headers = {} } = req.body;
     if (!url) return res.status(400).json({ success: false, message: 'Vui lòng cung cấp "url".' });
-    const links = await handleScrapeRequest(url, headers);
-    handleApiResponse(res, links, url);
+    const result = await handleScrapeRequest(url, headers);
+    handleApiResponse(res, result, url);
 });
-const handleApiResponse = (res, links, url) => {
-    if (links.length > 0) res.json({ success: true, count: links.length, source: url, links });
-    else res.json({ success: false, message: 'Không tìm thấy link nào.', source: url, links: [] });
+
+// --- THAY ĐỔI ---: Hàm xử lý kết quả API mới
+const handleApiResponse = (res, result, url) => {
+    const { links = [], contents = [], error = null } = result;
+    
+    if (error) {
+        // Nếu có lỗi từ quá trình scrape, trả về lỗi 500
+        return res.status(500).json({ success: false, message: 'Lỗi nội bộ trong quá trình scrape.', error: error, source: url });
+    }
+
+    if (links.length > 0 || contents.length > 0) {
+        res.json({
+            success: true,
+            source: url,
+            links: links,
+            contents: contents
+        });
+    } else {
+        res.json({
+            success: false,
+            message: 'Không tìm thấy link mạng hay nội dung blob nào.',
+            source: url,
+            links: [],
+            contents: []
+        });
+    }
 };
 
 // --- DOCS & START SERVER ---
-const docsHtml = `<!DOCTYPE html><html lang="vi"><head><title>API Docs - M3U8 Scraper</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.6;padding:20px;max-width:900px;margin:0 auto;color:#333}h1,h2,h3{color:#111;border-bottom:1px solid #ddd;padding-bottom:10px;margin-top:30px}code{background-color:#f4f4f4;padding:2px 6px;border-radius:4px;font-family:"Courier New",Courier,monospace;color:#c7254e}pre{background-color:#f6f8fa;padding:15px;border-radius:5px;white-space:pre-wrap;word-wrap:break-word;border:1px solid #ddd}a{color:#0366d6;text-decoration:none}a:hover{text-decoration:underline}.endpoint{border:1px solid #eee;padding:0 20px 15px;border-radius:8px;margin-bottom:20px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.05)}li{margin-bottom:10px}.badge{color:white;padding:3px 8px;border-radius:12px;font-size:.8em;font-weight:700;margin-right:8px}.badge-post{background-color:#28a745}.badge-get{background-color:#007bff}</style></head><body><h1>API Docs - M3U8 Scraper</h1><p>API cào dữ liệu link M3U8 với hệ thống proxy, rule động, xác thực và tự động xử lý blob URL.</p><h2>Xác Thực</h2><div class="endpoint"><p>Mọi yêu cầu đến <code>/api/scrape</code> đều phải được xác thực bằng cách thêm tham số <code>key=YOUR_API_KEY</code> vào query string.</p></div><h2>Cấu Hình Server (.env)</h2><div class="endpoint"><p><strong>Proxy:</strong> <code>P_IP</code>, <code>P_PORT</code>, etc. | <strong>Rule Động:</strong> <code>RULE_URL</code>, <code>RULE_UPDATE_INTERVAL</code></p></div><h2>Cách Viết Rule (trong file <code>rules.txt</code>)</h2><div class="endpoint"><h3>Chỉ Hỗ Trợ Regex</h3><p>Hệ thống chỉ chấp nhận các quy tắc có tiền tố <code>regex:</code>. Ví dụ rule chính xác:</p><pre><code>regex:\\.m3u8(\\?|$)</code></pre></div><h2><span class="badge badge-get">GET</span> /api/scrape</h2><div class="endpoint"><h3>Ví dụ</h3><pre><code>curl "http://localhost:3000/api/scrape?url=...&key=..."</code></pre></div><h2><span class="badge badge-post">POST</span> /api/scrape</h2><div class="endpoint"><h3>Ví dụ</h3><pre><code>curl -X POST "http://localhost:3000/api/scrape?key=..." \\
+const docsHtml = `<!DOCTYPE html><html lang="vi"><head><title>API Docs - M3U8 Scraper</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.6;padding:20px;max-width:900px;margin:0 auto;color:#333}h1,h2,h3{color:#111;border-bottom:1px solid #ddd;padding-bottom:10px;margin-top:30px}code{background-color:#f4f4f4;padding:2px 6px;border-radius:4px;font-family:"Courier New",Courier,monospace;color:#c7254e}pre{background-color:#f6f8fa;padding:15px;border-radius:5px;white-space:pre-wrap;word-wrap:break-word;border:1px solid #ddd}a{color:#0366d6;text-decoration:none}a:hover{text-decoration:underline}.endpoint{border:1px solid #eee;padding:0 20px 15px;border-radius:8px;margin-bottom:20px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.05)}li{margin-bottom:10px}.badge{color:white;padding:3px 8px;border-radius:12px;font-size:.8em;font-weight:700;margin-right:8px}.badge-post{background-color:#28a745}.badge-get{background-color:#007bff}</style></head><body><h1>API Docs - M3U8 Scraper</h1><p>API cào dữ liệu link M3U8 với hệ thống proxy, rule động, xác thực và tự động xử lý blob URL.</p><h2>Xác Thực</h2><div class="endpoint"><p>Mọi yêu cầu đến <code>/api/scrape</code> đều phải được xác thực bằng cách thêm tham số <code>key=YOUR_API_KEY</code> vào query string.</p></div><h2>Cấu Hình Server (.env)</h2><div class="endpoint"><p><strong>Proxy:</strong> <code>P_IP</code>, <code>P_PORT</code>, etc. | <strong>Rule Động:</strong> <code>RULE_URL</code>, <code>RULE_UPDATE_INTERVAL</code></p></div><h2>Định dạng trả về</h2><div class="endpoint"><p>API sẽ trả về cả link mạng và nội dung blob (nếu có)</p><pre><code>{
+  "success": true,
+  "source": "https://...",
+  "links": ["https://.../master.m3u8"],
+  "contents": ["#EXTM3U\\n#EXT-X-STREAM-INF:BANDWIDTH=..."]
+}</code></pre></div><h2><span class="badge badge-get">GET</span> /api/scrape</h2><div class="endpoint"><h3>Ví dụ</h3><pre><code>curl "http://localhost:3000/api/scrape?url=...&key=..."</code></pre></div><h2><span class="badge badge-post">POST</span> /api/scrape</h2><div class="endpoint"><h3>Ví dụ</h3><pre><code>curl -X POST "http://localhost:3000/api/scrape?key=..." \\
 -H "Content-Type: application/json" \\
 -d '{"url": "...", "headers": {"Referer": "..."}}'</code></pre></div></body></html>`;
 
