@@ -231,7 +231,7 @@ const initializeBrowser = async () => {
         browserInstance = await puppeteer.launch({
             headless: "new",
             args: launchArgs,
-            executablePath: process.env.CHROME_BIN || null, 
+            executablePath: '/usr/bin/chromium',
             userDataDir: '/usr/src/app/.browser-cache',
             ignoreDefaultArgs: ['--mute-audio']
         });
