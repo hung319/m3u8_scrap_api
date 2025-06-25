@@ -146,10 +146,8 @@ async function handleScrapeRequest(targetUrl, headers) {
             };
         });
         
-        // Tải lại trang với cơ chế bắt blob đã được tiêm
         await page.reload({ waitUntil: 'networkidle2', timeout: 60000 });
-
-        // --- THAY ĐỔI QUAN TRỌNG ---: Phát video NGAY SAU KHI tải lại trang
+        
         console.log('[GIAI ĐOẠN 3] Đang thử ép video phát để kích hoạt blob...');
         try {
             await page.evaluate(async () => {
@@ -158,12 +156,16 @@ async function handleScrapeRequest(targetUrl, headers) {
                     try { await video.play(); } catch (e) {}
                 }
             });
-            await new Promise(resolve => setTimeout(resolve, 5000)); // Chờ blob được tạo
+            await new Promise(resolve => setTimeout(resolve, 5000));
         } catch(e) { /* Bỏ qua nếu không có video */ }
 
+        // --- THAY ĐỔI QUAN TRỌNG: Kết hợp 2 phương pháp quét blob ---
+        const blobUrlsFromDOM = await page.$$eval('video, audio', els => els.map(el => el.src).filter(src => src && src.startsWith('blob:')));
+        const allBlobUrlsToScan = new Set([...interceptedBlobUrls, ...blobUrlsFromDOM]);
+        console.log(`[BLOB SCAN] Tổng hợp được ${allBlobUrlsToScan.size} blob URL từ interceptor và quét DOM.`);
 
-        if (interceptedBlobUrls.size > 0) {
-            for (const blobUrl of interceptedBlobUrls) {
+        if (allBlobUrlsToScan.size > 0) {
+            for (const blobUrl of allBlobUrlsToScan) {
                 const isUrlMatch = blobUrlFilterRules.some(rule => rule.test(blobUrl));
                 if (!isUrlMatch) {
                     console.log(`[BLOB FILTER] URL ${blobUrl} không khớp với rule. Bỏ qua.`);
