@@ -1,13 +1,9 @@
-// server.js (Phiên bản cuối cùng, hiệu năng cao, thoát sớm)
-
 require('dotenv').config();
 
 const express = require('express');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const axios = require('axios');
-const url = require('url');
-const { SocksProxyAgent } = require('socks-proxy-agent');
 const FormData = require('form-data');
 
 puppeteer.use(StealthPlugin());
@@ -16,7 +12,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 app.use(express.json());
 
-// --- CẤU HÌNH SERVER ---
+// --- CẤU HÌNH SERVER (Không đổi) ---
 const { API_KEY, P_IP, P_PORT, P_USER, P_PASSWORD, RULE_URL, RULE_UPDATE_INTERVAL } = process.env;
 let globalProxyUrl = null;
 if (P_IP && P_PORT) {
@@ -25,21 +21,21 @@ if (P_IP && P_PORT) {
 }
 if (!API_KEY) console.warn('[SECURITY WARNING] API_KEY chưa được thiết lập!');
 
-// --- Biến toàn cục cho trình duyệt và quản lý rule ---
+// --- Biến toàn cục (Không đổi) ---
 let browserInstance = null;
-let detectionRules = [/application\/(vnd\.apple\.mpegurl|x-mpegurl)/i];
+let detectionRules = [/application\/(vnd\.apple\.mpegurl|x-mpegurl)/i, /\.m3u8(\?|$)/i];
 
-// --- CÁC HÀM HELPER VÀ LÕI ---
+// --- CÁC HÀM HELPER VÀ LÕI (Không đổi) ---
 const updateDetectionRules = async () => {
-    if (!RULE_URL) return console.log('[RULE MANAGER] Không có RULE_URL. Chỉ dùng rule Content-Type mặc định.');
+    if (!RULE_URL) return console.log('[RULE MANAGER] Không có RULE_URL. Dùng rule mặc định.');
     console.log(`[RULE MANAGER] Đang cập nhật rule từ: ${RULE_URL}`);
     try {
         const { data } = await axios.get(RULE_URL);
         const remoteRules = data.split('\n').map(l => l.trim()).filter(l => l.toLowerCase().startsWith('regex:')).map(l => {
-            try { return new RegExp(l.substring(6).trim(), 'i'); } 
+            try { return new RegExp(l.substring(6).trim(), 'i'); }
             catch (e) { console.error(`[RULE MANAGER] Lỗi cú pháp rule: "${l}". Bỏ qua.`); return null; }
         }).filter(Boolean);
-        detectionRules = [/application\/(vnd\.apple\.mpegurl|x-mpegurl)/i, ...remoteRules];
+        detectionRules = [/application\/(vnd\.apple\.mpegurl|x-mpegurl)/i, /\.m3u8(\?|$)/i, ...remoteRules];
         console.log(`[RULE MANAGER] Cập nhật thành công! Tổng số rule: ${detectionRules.length}`);
     } catch (error) {
         console.error(`[RULE MANAGER] Lỗi khi tải file rule: ${error.message}`);
@@ -52,6 +48,7 @@ const apiKeyMiddleware = (req, res, next) => {
     res.status(401).json({ success: false, message: 'Unauthorized: API Key không hợp lệ hoặc bị thiếu.' });
 };
 
+// Sử dụng dpaste.org hoặc dịch vụ pastebin khác nếu cần
 async function uploadToDpaste(content) {
     try {
         const form = new FormData();
@@ -66,75 +63,113 @@ async function uploadToDpaste(content) {
     }
 }
 
+// Hàm xử lý response mạng, được giữ lại để bắt các link m3u8 trực tiếp
 const handleResponse = (response, foundLinks) => {
     const requestUrl = response.url();
     if (requestUrl.startsWith('data:')) return;
     const contentType = response.headers()['content-type'] || '';
     const isMatchByRule = detectionRules.some(rule => rule.test(requestUrl) || rule.test(contentType));
-    if (isMatchByRule && !requestUrl.endsWith('.ts')) {
-        console.log(`[+] Đã bắt được link M3U8 (khớp với Rule): ${requestUrl}`);
+    if (isMatchByRule && !requestUrl.endsWith('.ts') && !foundLinks.has(requestUrl)) {
+        console.log(`[+] Đã bắt được link M3U8 (từ Network Response): ${requestUrl}`);
         foundLinks.add(requestUrl);
     }
 };
 
-// --- LOGIC SCRAPE CHÍNH ---
-async function handleScrapeRequest(targetUrl, headers) {
-    if (!browserInstance) throw new Error("Trình duyệt chưa sẵn sàng. Vui lòng thử lại sau giây lát.");
+
+// --- LOGIC SCRAPE NÂNG CẤP ---
+async function handleScrapeRequestV2(targetUrl, headers) {
+    if (!browserInstance) throw new Error("Trình duyệt chưa sẵn sàng.");
 
     let page = null;
     const foundLinks = new Set();
+    // Tạo một promise sẽ được resolve khi có link, để "thoát sớm"
+    let resolveEarly;
+    const earlyExitPromise = new Promise(resolve => { resolveEarly = resolve; });
+
     console.log(`[PAGE] Đang mở trang mới cho: ${targetUrl}`);
 
     try {
         page = await browserInstance.newPage();
+
+        // --- CẢI TIẾN #1: HOOK VÀO URL.createObjectURL ĐỂ BẮT BLOB M3U8 ---
+        // Expose một hàm từ Node.js ra môi trường trình duyệt
+        await page.exposeFunction('__onM3U8FoundInBlob', async (m3u8Content) => {
+            console.log('[BLOB DETECTOR] Đã bắt được nội dung M3U8 từ một blob!');
+            const rawLink = await uploadToDpaste(m3u8Content);
+            if (rawLink && !foundLinks.has(rawLink)) {
+                foundLinks.add(rawLink);
+                console.log(`[+] Đã xử lý link từ blob: ${rawLink}`);
+                resolveEarly(Array.from(foundLinks)); // Kích hoạt "thoát sớm"
+            }
+        });
+
+        // Chạy script này ngay khi document được tạo, trước cả script của trang web
+        await page.evaluateOnNewDocument(() => {
+            const originalCreateObjectURL = URL.createObjectURL;
+            URL.createObjectURL = function (blob) {
+                // Chỉ xử lý các blob có type liên quan đến video/streaming
+                if (blob && (blob.type.includes('mpegurl') || blob.type.includes('octet-stream'))) {
+                    blob.text().then(content => {
+                        if (content.trim().startsWith('#EXTM3U')) {
+                            // Gọi hàm đã được expose từ Node.js
+                            window.__onM3U8FoundInBlob(content);
+                        }
+                    });
+                }
+                // Vẫn gọi hàm gốc để không làm hỏng chức năng của trang
+                return originalCreateObjectURL.apply(this, arguments);
+            };
+        });
+
+        // Tối ưu hóa: Chặn các tài nguyên không cần thiết
         await page.setRequestInterception(true);
-        page.on('request', r => ['image', 'stylesheet', 'font'].includes(r.resourceType()) ? r.abort() : r.continue());
+        page.on('request', r => ['image', 'stylesheet', 'font', 'media'].includes(r.resourceType()) ? r.abort() : r.continue());
         if (Object.keys(headers).length > 0) await page.setExtraHTTPHeaders(headers);
 
+        // Giữ lại listener cho response để bắt các link trực tiếp
         page.on('response', r => handleResponse(r, foundLinks));
         page.on('framecreated', async f => f.on('response', r => handleResponse(r, foundLinks)));
-
-        await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+        
+        console.log('[PAGE] Đang điều hướng và chờ...');
+        await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 45000 });
 
         if (foundLinks.size > 0) {
             console.log('[OPTIMIZATION] Tìm thấy link mạng trong lúc tải trang. Trả về ngay.');
             return Array.from(foundLinks);
         }
-        
-        console.log('[INTERACTION] Đang thử tương tác với video...');
+
+        // --- CẢI TIẾN #2: RÚT NGẮN THỜI GIAN CHỜ VÀ TĂNG CƯỜNG TƯƠNG TÁC ---
+        console.log('[INTERACTION] Thử tương tác với video player...');
         try {
-            const videoElement = await page.waitForSelector('video', { timeout: 3000, visible: true });
-            if (videoElement) await videoElement.click();
-        } catch (e) {
-            try {
-                const playButton = await page.waitForSelector('[class*="play"], [aria-label*="Play"], [aria-label*="Phát"]', { timeout: 2000, visible: true });
-                if (playButton) await playButton.click();
-            } catch (e2) {}
-        }
-        
-        await new Promise(resolve => setTimeout(resolve, 5000));
-        
-        if (foundLinks.size > 0) {
-            console.log('[OPTIMIZATION] Tìm thấy link mạng sau khi tương tác. Trả về ngay.');
-            return Array.from(foundLinks);
-        }
-        
-        console.log('[BLOB SCANNER] Không tìm thấy link mạng, đang quét blob...');
-        const blobUrls = await page.$$eval('video, audio', els => els.map(el => el.src).filter(src => src && src.startsWith('blob:')));
-        if (blobUrls.length > 0) {
-             for (const blobUrl of blobUrls) {
-                const m3u8Content = await page.evaluate(async (bUrl) => { try { return await (await fetch(bUrl)).text(); } catch (e) { return null; } }, blobUrl);
-                if (m3u8Content && m3u8Content.trim().includes('#EXTM3U')) {
-                    const rawLink = await uploadToDpaste(m3u8Content);
-                    if (rawLink) foundLinks.add(rawLink);
-                    if (foundLinks.size > 0) {
-                        console.log('[OPTIMIZATION] Tìm thấy link từ blob. Trả về ngay.');
-                        return Array.from(foundLinks);
-                    }
-                }
+            // Selector mạnh hơn, bao gồm cả các nút của JW Player
+            const playButtonSelector = [
+                'video',
+                '[aria-label*="Play"]',
+                '[aria-label*="Phát"]',
+                '[class*="play"]',
+                '[class*="jw-icon-display"]', // Dành cho JW Player
+                '[role="button"][aria-label*="Play"]'
+            ].join(', ');
+            
+            const elementToClick = await page.waitForSelector(playButtonSelector, { timeout: 5000, visible: true });
+            if (elementToClick) {
+                await elementToClick.click();
+                console.log("[INTERACTION] Đã click vào trình phát video.");
             }
+        } catch (e) {
+            console.log("[INTERACTION] Không tìm thấy nút play hoặc video rõ ràng để click.");
         }
-        return Array.from(foundLinks);
+        
+        // Chờ kết quả từ các hành động (tải trang, click, hook blob)
+        // Sẽ chờ tối đa 10 giây hoặc cho đến khi `resolveEarly` được gọi
+        console.log('[PAGE] Đang chờ kết quả cuối cùng...');
+        const result = await Promise.race([
+            earlyExitPromise,
+            new Promise(resolve => setTimeout(() => resolve(Array.from(foundLinks)), 10000))
+        ]);
+
+        return result;
+
     } catch (error) {
         console.error(`[PAGE] Lỗi khi xử lý trang ${targetUrl}:`, error.message);
         return [];
@@ -144,39 +179,42 @@ async function handleScrapeRequest(targetUrl, headers) {
     }
 }
 
-// --- API ENDPOINTS ---
-app.get('/api/scrape', apiKeyMiddleware, async (req, res) => {
-    const { url, referer } = req.query;
-    if (!url) return res.status(400).json({ success: false, message: 'Vui lòng cung cấp tham số "url".' });
-    const headers = referer ? { Referer: referer } : {};
-    const links = await handleScrapeRequest(url, headers);
-    handleApiResponse(res, links, url);
-});
-app.post('/api/scrape', apiKeyMiddleware, async (req, res) => {
-    const { url, headers = {} } = req.body;
+// --- API ENDPOINTS (Sử dụng logic V2) ---
+app.all('/api/scrape', apiKeyMiddleware, async (req, res) => {
+    const { url, headers = {} } = { ...req.query, ...req.body };
     if (!url) return res.status(400).json({ success: false, message: 'Vui lòng cung cấp "url".' });
-    const links = await handleScrapeRequest(url, headers);
+
+    // Hợp nhất referer từ query vào headers nếu có
+    if (req.query.referer && !headers.Referer) {
+        headers.Referer = req.query.referer;
+    }
+
+    const links = await handleScrapeRequestV2(url, headers);
     handleApiResponse(res, links, url);
 });
+
 const handleApiResponse = (res, links, url) => {
-    if (links.length > 0) res.json({ success: true, count: links.length, source: url, links });
-    else res.json({ success: false, message: 'Không tìm thấy link M3U8 nào.', source: url, links: [] });
+    if (links.length > 0) {
+        // Loại bỏ các link trùng lặp lần cuối
+        const uniqueLinks = [...new Set(links)];
+        res.json({ success: true, count: uniqueLinks.length, source: url, links: uniqueLinks });
+    } else {
+        res.json({ success: false, message: 'Không tìm thấy link M3U8 nào.', source: url, links: [] });
+    }
 };
 
-// --- DOCS & START SERVER ---
-const docsHtml = `<!DOCTYPE html><html lang="vi"><head><title>API Docs - M3U8 Scraper</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.6;padding:20px;max-width:900px;margin:0 auto;color:#333}h1,h2,h3{color:#111;border-bottom:1px solid #ddd;padding-bottom:10px;margin-top:30px}code{background-color:#f4f4f4;padding:2px 6px;border-radius:4px;font-family:"Courier New",Courier,monospace;color:#c7254e}pre{background-color:#f6f8fa;padding:15px;border-radius:5px;white-space:pre-wrap;word-wrap:break-word;border:1px solid #ddd}a{color:#0366d6;text-decoration:none}a:hover{text-decoration:underline}.endpoint{border:1px solid #eee;padding:0 20px 15px;border-radius:8px;margin-bottom:20px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.05)}li{margin-bottom:10px}.badge{color:white;padding:3px 8px;border-radius:12px;font-size:.8em;font-weight:700;margin-right:8px}.badge-post{background-color:#28a745}.badge-get{background-color:#007bff}</style></head><body><h1>API Docs - M3U8 Scraper</h1><p>API cào dữ liệu link M3U8 với hệ thống proxy, rule động, xác thực và tự động xử lý blob URL.</p><h2>Xác Thực</h2><div class="endpoint"><p>Mọi yêu cầu đến <code>/api/scrape</code> đều phải được xác thực bằng cách thêm tham số <code>key=YOUR_API_KEY</code> vào query string.</p></div><h2>Cấu Hình Server (.env)</h2><div class="endpoint"><p><strong>Proxy:</strong> <code>P_IP</code>, <code>P_PORT</code>, etc. | <strong>Rule Động:</strong> <code>RULE_URL</code>, <code>RULE_UPDATE_INTERVAL</code></p></div><h2>Cách Viết Rule (trong file <code>rules.txt</code>)</h2><div class="endpoint"><h3>Chỉ Hỗ Trợ Regex</h3><p>Hệ thống chỉ chấp nhận các quy tắc có tiền tố <code>regex:</code>.</p><pre><code>regex:\\.m3u8?(\\?|$)</code></pre></div><h2><span class="badge badge-get">GET</span> /api/scrape</h2><div class="endpoint"><h3>Ví dụ</h3><pre><code>curl "http://localhost:3000/api/scrape?url=...&key=..."</code></pre></div><h2><span class="badge badge-post">POST</span> /api/scrape</h2><div class="endpoint"><h3>Ví dụ</h3><pre><code>curl -X POST "http://localhost:3000/api/scrape?key=..." \\
--H "Content-Type: application/json" \\
--d '{"url": "...", "headers": {"Referer": "..."}}'</code></pre></div></body></html>`;
+// --- DOCS & START SERVER (Không đổi) ---
+const docsHtml = `<!DOCTYPE html><html lang="vi"><head><title>API Docs - M3U8 Scraper v2</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.6;padding:20px;max-width:900px;margin:0 auto;color:#333}h1,h2,h3{color:#111;border-bottom:1px solid #ddd;padding-bottom:10px;margin-top:30px}code{background-color:#f4f4f4;padding:2px 6px;border-radius:4px;font-family:"Courier New",Courier,monospace;color:#c7254e}pre{background-color:#f6f8fa;padding:15px;border-radius:5px;white-space:pre-wrap;word-wrap:break-word;border:1px solid #ddd}a{color:#0366d6;text-decoration:none}a:hover{text-decoration:underline}.endpoint{border:1px solid #eee;padding:0 20px 15px;border-radius:8px;margin-bottom:20px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.05)}li{margin-bottom:10px}.badge{color:white;padding:3px 8px;border-radius:12px;font-size:.8em;font-weight:700;margin-right:8px}.badge-all{background-color:#28a745}</style></head><body><h1>API Docs - M3U8 Scraper v2</h1><p>API cào dữ liệu link M3U8 với hệ thống proxy, rule động, xác thực và <strong>xử lý blob URL chủ động</strong>.</p><h2>Xác Thực</h2><div class="endpoint"><p>Mọi yêu cầu đến <code>/api/scrape</code> đều phải được xác thực bằng cách thêm tham số <code>key=YOUR_API_KEY</code> vào query string.</p></div><h2><span class="badge badge-all">GET/POST</span> /api/scrape</h2><div class="endpoint"><p>Endpoint chấp nhận cả GET và POST.</p><h3>Ví dụ (POST)</h3><pre><code>curl -X POST "http://localhost:3000/api/scrape?key=..." \\\n-H "Content-Type: application/json" \\\n-d '{"url": "...", "headers": {"Referer": "..."}}'</code></pre></div></body></html>`;
 
 const startServer = async () => {
-    await initializeBrowser(); // Khởi tạo trình duyệt trước
+    await initializeBrowser();
     await updateDetectionRules();
     const updateIntervalMinutes = parseInt(RULE_UPDATE_INTERVAL, 10) || 60;
     setInterval(updateDetectionRules, updateIntervalMinutes * 60 * 1000);
     console.log(`[RULE MANAGER] Đã lên lịch cập nhật rule mỗi ${updateIntervalMinutes} phút.`);
     app.get('/docs', (req, res) => res.setHeader('Content-Type', 'text/html').send(docsHtml));
     app.get('/', (req, res) => res.redirect('/docs'));
-    app.listen(PORT, () => console.log(`Server hiệu năng cao đang chạy tại http://localhost:${PORT}`));
+    app.listen(PORT, () => console.log(`Server v2 hiệu năng cao đang chạy tại http://localhost:${PORT}`));
 };
 
 const initializeBrowser = async () => {
@@ -187,8 +225,7 @@ const initializeBrowser = async () => {
         browserInstance = await puppeteer.launch({
             headless: "new",
             args: launchArgs,
-            executablePath: '/usr/bin/chromium',
-            userDataDir: '/usr/src/app/.browser-cache'
+            executablePath: process.env.CHROME_BIN || '/usr/bin/chromium-browser' // Linh hoạt hơn
         });
         console.log('[BROWSER] Trình duyệt đã sẵn sàng!');
     } catch (error) {
