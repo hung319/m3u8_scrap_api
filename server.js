@@ -75,22 +75,20 @@ const handleResponse = (response, foundLinks) => {
     }
 };
 
-// --- LOGIC SCRAPE CHÍNH ---
+// --- LOGIC SCRAPE CHÍNH (ĐÃ SỬA LỖI ƯU TIÊN) ---
 async function handleScrapeRequest(targetUrl, headers) {
-    if (!browserInstance) throw new Error("Trình duyệt chưa sẵn sàng. Vui lòng thử lại sau giây lát.");
+    if (!browserInstance) throw new Error("Trình duyệt chưa sẵn sàng.");
 
     let page = null;
     const foundLinks = new Set();
-    const interceptedBlobUrls = new Set(); // --- THÊM MỚI --- Set để lưu blob URLs bắt được
+    const interceptedBlobUrls = new Set();
     console.log(`[PAGE] Đang mở trang mới cho: ${targetUrl}`);
 
     try {
         page = await browserInstance.newPage();
 
-        // --- THÊM MỚI ---: Thiết lập "gián điệp" bắt Blob URL ngay từ đầu
         await page.exposeFunction('reportBlobUrl', (blobUrl) => {
             if (blobUrl && blobUrl.startsWith('blob:')) {
-                console.log(`[BLOB INTERCEPTOR] Đã bắt được Blob URL được tạo: ${blobUrl}`);
                 interceptedBlobUrls.add(blobUrl);
             }
         });
@@ -98,7 +96,7 @@ async function handleScrapeRequest(targetUrl, headers) {
             const originalCreateObjectURL = URL.createObjectURL;
             URL.createObjectURL = function(obj) {
                 const blobUrl = originalCreateObjectURL.apply(this, arguments);
-                window.reportBlobUrl(blobUrl); // Báo cáo URL về Node.js
+                window.reportBlobUrl(blobUrl);
                 return blobUrl;
             };
         });
@@ -110,75 +108,62 @@ async function handleScrapeRequest(targetUrl, headers) {
         page.on('response', r => handleResponse(r, foundLinks));
         page.on('framecreated', async f => f.on('response', r => handleResponse(r, foundLinks)));
 
+        // --- GIAI ĐOẠN 1: Tải trang và tìm link mạng trực tiếp ---
         await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
 
         if (foundLinks.size > 0) {
-            console.log('[OPTIMIZATION] Tìm thấy link mạng trong lúc tải trang. Trả về ngay.');
+            console.log('[ƯU TIÊN] Tìm thấy link mạng ngay khi tải trang. Trả về ngay lập tức.');
             return Array.from(foundLinks);
         }
-        
-        // --- THAY ĐỔI ---: Thay thế khối click() bằng phương pháp play() trực tiếp
-        console.log('[INTERACTION] Đang thử ép video phát bằng Javascript...');
+
+        // --- GIAI ĐOẠN 2: Tương tác và tìm link mạng thứ cấp ---
+        console.log('[TƯƠNG TÁC] Không có link mạng ban đầu. Thử ép video phát...');
         try {
             await page.evaluate(async () => {
-                const videoElements = document.querySelectorAll('video');
-                if (videoElements.length === 0) return;
-                for (const video of videoElements) {
-                    video.muted = true; // Yêu cầu để vượt qua chính sách autoplay
-                    try {
-                        await video.play();
-                        console.log('Một video đã được yêu cầu phát thành công!');
-                    } catch (err) {
-                        console.error('Lỗi khi cố gắng gọi .play():', err.message);
-                    }
+                for (const video of document.querySelectorAll('video')) {
+                    video.muted = true;
+                    try { await video.play(); } catch (e) {}
                 }
             });
-        } catch (e) {
-            console.error('[INTERACTION] Lỗi khi thực thi script play video:', e.message);
-        }
+        } catch (e) { /* Bỏ qua lỗi nếu không tương tác được */ }
         
         await new Promise(resolve => setTimeout(resolve, 5000));
         
         if (foundLinks.size > 0) {
-            console.log('[OPTIMIZATION] Tìm thấy link mạng sau khi tương tác. Trả về ngay.');
+            console.log('[ƯU TIÊN] Tìm thấy link mạng sau khi tương tác. Trả về ngay lập tức.');
             return Array.from(foundLinks);
         }
-        
-        // --- THAY ĐỔI ---: Ưu tiên xử lý các blob đã bắt được từ interceptor
-        const allBlobUrlsToScan = new Set([...interceptedBlobUrls]);
-        // Vẫn quét thêm từ DOM để chắc chắn không bỏ sót
-        const blobUrlsFromDOM = await page.$$eval('video, audio', els => els.map(el => el.src).filter(src => src && src.startsWith('blob:')));
-        blobUrlsFromDOM.forEach(url => allBlobUrlsToScan.add(url));
 
-        if (allBlobUrlsToScan.size > 0) {
-            console.log(`[BLOB SCANNER] Không tìm thấy link mạng, đang quét ${allBlobUrlsToScan.size} blob URL...`);
-            for (const blobUrl of allBlobUrlsToScan) {
+        // --- GIAI ĐOẠN 3 (CUỐI CÙNG): Nếu không có link mạng, xử lý Blob ---
+        console.log('[CUỐI CÙNG] Không tìm thấy link mạng. Chuyển sang quét Blob.');
+        const blobUrlsFromDOM = await page.$$eval('video, audio', els => els.map(el => el.src).filter(src => src && src.startsWith('blob:')));
+        blobUrlsFromDOM.forEach(url => interceptedBlobUrls.add(url));
+
+        if (interceptedBlobUrls.size > 0) {
+            console.log(`[BLOB SCANNER] Đang quét ${interceptedBlobUrls.size} blob URL...`);
+            for (const blobUrl of interceptedBlobUrls) {
                 const m3u8Content = await page.evaluate(async (bUrl) => { try { return await (await fetch(bUrl)).text(); } catch (e) { return null; } }, blobUrl);
                 if (m3u8Content && m3u8Content.trim().includes('#EXTM3U')) {
                     const rawLink = await uploadToDpaste(m3u8Content);
-                    if (rawLink) foundLinks.add(rawLink);
-                    if (foundLinks.size > 0) {
-                        console.log('[OPTIMIZATION] Tìm thấy link từ blob. Trả về ngay.');
-                        // Đóng trang và trả về ngay trong vòng lặp
-                        if (page) await page.close();
-                        console.log(`[PAGE] Đã đóng trang cho: ${targetUrl}`);
-                        page = null; // Đánh dấu là đã đóng
-                        return Array.from(foundLinks);
+                    if (rawLink) {
+                        console.log('[BLOB SCANNER] Đã xử lý thành công một blob. Trả về ngay.');
+                        foundLinks.add(rawLink);
+                        return Array.from(foundLinks); // Trả về ngay khi có kết quả đầu tiên từ blob
                     }
                 }
             }
         }
         
-        return Array.from(foundLinks);
+        console.log('[KẾT THÚC] Quá trình quét hoàn tất.');
+        return Array.from(foundLinks); // Trả về kết quả cuối cùng (có thể rỗng)
     } catch (error) {
-        console.error(`[PAGE] Lỗi khi xử lý trang ${targetUrl}:`, error.message);
+        console.error(`[PAGE] Lỗi nghiêm trọng khi xử lý trang ${targetUrl}:`, error.message);
         return [];
     } finally {
-        if (page) await page.close(); // Đảm bảo trang luôn được đóng nếu chưa đóng
+        if (page) await page.close();
         console.log(`[PAGE] Đã đóng trang cho: ${targetUrl}`);
     }
 }
-
 
 // --- API ENDPOINTS ---
 app.get('/api/scrape', apiKeyMiddleware, async (req, res) => {
@@ -205,7 +190,7 @@ const docsHtml = `<!DOCTYPE html><html lang="vi"><head><title>API Docs - M3U8 Sc
 -d '{"url": "...", "headers": {"Referer": "..."}}'</code></pre></div></body></html>`;
 
 const startServer = async () => {
-    await initializeBrowser(); // Khởi tạo trình duyệt trước
+    await initializeBrowser();
     await updateDetectionRules();
     const updateIntervalMinutes = parseInt(RULE_UPDATE_INTERVAL, 10) || 60;
     setInterval(updateDetectionRules, updateIntervalMinutes * 60 * 1000);
@@ -223,7 +208,6 @@ const initializeBrowser = async () => {
         browserInstance = await puppeteer.launch({
             headless: "new",
             args: launchArgs,
-            // --- THAY ĐỔI ---: Nên để Puppeteer tự tìm Chromium hoặc cung cấp đường dẫn chính xác
             executablePath: '/usr/bin/chromium', 
             userDataDir: '/usr/src/app/.browser-cache'
         });
