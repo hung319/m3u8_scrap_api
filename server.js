@@ -77,70 +77,103 @@ const handleResponse = (response, foundLinks) => {
     }
 };
 
-// --- LOGIC SCRAPE CHÍNH ---
-async function handleScrapeRequest(targetUrl, headers) {
-    if (!browserInstance) throw new Error("Trình duyệt chưa sẵn sàng. Vui lòng thử lại sau giây lát.");
+// Thay thế hàm này trong file server.js của bạn
 
-    let page = null;
+async function findM3u8LinksWithPuppeteer(targetUrl, customHeaders = {}) {
+    console.log(`[PUPPETEER] Bắt đầu phiên làm việc cho: ${targetUrl}`);
+    const launchArgs = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'];
+    if (globalProxyUrl) launchArgs.push(`--proxy-server=${globalProxyUrl}`);
+    
     const foundLinks = new Set();
-    console.log(`[PAGE] Đang mở trang mới cho: ${targetUrl}`);
+    let browser = null;
 
     try {
-        page = await browserInstance.newPage();
+        browser = await puppeteer.launch({
+            headless: "new",
+            args: launchArgs,
+            executablePath: '/usr/bin/chromium'
+        });
+        const page = await browser.newPage();
+        
         await page.setRequestInterception(true);
         page.on('request', r => ['image', 'stylesheet', 'font'].includes(r.resourceType()) ? r.abort() : r.continue());
-        if (Object.keys(headers).length > 0) await page.setExtraHTTPHeaders(headers);
-
+        if (Object.keys(customHeaders).length > 0) await page.setExtraHTTPHeaders(customHeaders);
+        
         page.on('response', r => handleResponse(r, foundLinks));
-        page.on('framecreated', async f => f.on('response', r => handleResponse(r, foundLinks)));
-
+        page.on('framecreated', async f => {
+            // Vẫn lắng nghe network response trong các frame mới tạo
+            f.on('response', r => handleResponse(r, foundLinks));
+        });
+        
         await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-
         if (foundLinks.size > 0) {
             console.log('[OPTIMIZATION] Tìm thấy link mạng trong lúc tải trang. Trả về ngay.');
             return Array.from(foundLinks);
         }
         
-        console.log('[INTERACTION] Đang thử tương tác với video...');
-        try {
-            const videoElement = await page.waitForSelector('video', { timeout: 3000, visible: true });
-            if (videoElement) await videoElement.click();
-        } catch (e) {
-            try {
-                const playButton = await page.waitForSelector('[class*="play"], [aria-label*="Play"], [aria-label*="Phát"]', { timeout: 2000, visible: true });
-                if (playButton) await playButton.click();
-            } catch (e2) {}
-        }
+        console.log('[INTERACTION] Trang đã tải, đang thử tương tác với video...');
+        // Sử dụng page.$eval để tránh lỗi nếu không tìm thấy element
+        await page.$eval('video', el => el.click().catch(() => {})).catch(() => {});
+        await page.$eval('[class*="play"], [aria-label*="Play"], [aria-label*="Phát"]', el => el.click().catch(() => {})).catch(() => {});
         
+        console.log('[INTERACTION] Chờ 5 giây sau khi tương tác...');
         await new Promise(resolve => setTimeout(resolve, 5000));
         
         if (foundLinks.size > 0) {
             console.log('[OPTIMIZATION] Tìm thấy link mạng sau khi tương tác. Trả về ngay.');
             return Array.from(foundLinks);
         }
-        
-        console.log('[BLOB SCANNER] Không tìm thấy link mạng, đang quét blob...');
-        const blobUrls = await page.$$eval('video, audio', els => els.map(el => el.src).filter(src => src && src.startsWith('blob:')));
-        if (blobUrls.length > 0) {
-             for (const blobUrl of blobUrls) {
-                const m3u8Content = await page.evaluate(async (bUrl) => { try { return await (await fetch(bUrl)).text(); } catch (e) { return null; } }, blobUrl);
-                if (m3u8Content && m3u8Content.trim().includes('#EXTM3U')) {
-                    const rawLink = await uploadToDpaste(m3u8Content);
-                    if (rawLink) foundLinks.add(rawLink);
-                    if (foundLinks.size > 0) {
-                        console.log('[OPTIMIZATION] Tìm thấy link từ blob. Trả về ngay.');
-                        return Array.from(foundLinks);
+
+        // --- TÍNH NĂNG MỚI: QUÉT TẤT CẢ CÁC FRAME (TRANG CHÍNH + IFRAME) ---
+        console.log('[FRAME SCANNER] Không tìm thấy link mạng, bắt đầu quét sâu vào các frame...');
+        const allFrames = page.frames();
+        console.log(`[FRAME SCANNER] Tìm thấy ${allFrames.length} frame để quét.`);
+
+        for (let i = 0; i < allFrames.length; i++) {
+            const frame = allFrames[i];
+            // Bỏ qua các frame đã bị detach khỏi DOM
+            if (frame.isDetached()) continue;
+
+            console.log(`[FRAME SCANNER] Đang quét frame ${i+1}/${allFrames.length}...`);
+            try {
+                const blobUrls = await frame.$$eval('video, audio', els => els.map(el => el.src).filter(src => src && src.startsWith('blob:')));
+                
+                if (blobUrls.length === 0) {
+                    console.log(`[FRAME SCANNER] -> Frame ${i+1} không có link blob.`);
+                    continue;
+                }
+
+                console.log(`[FRAME SCANNER] -> Frame ${i+1} tìm thấy ${blobUrls.length} link blob. Đang xử lý...`);
+                for (const blobUrl of blobUrls) {
+                    // Dùng frame.evaluate để chạy JS trong đúng ngữ cảnh của frame đó
+                    const m3u8Content = await frame.evaluate(async (bUrl) => {
+                        try { return await (await fetch(bUrl)).text(); } catch (e) { return null; }
+                    }, blobUrl);
+                    
+                    if (m3u8Content && m3u8Content.trim().includes('#EXTM3U')) {
+                        console.log(`[FRAME SCANNER] -> Nội dung từ blob ${blobUrl} là M3U8. Đang tải lên Dpaste...`);
+                        const rawLink = await uploadToDpaste(m3u8Content);
+                        if (rawLink) foundLinks.add(rawLink);
                     }
                 }
+            } catch (error) {
+                console.log(`[FRAME SCANNER] Lỗi khi quét frame ${i+1}: ${error.message}`);
+            }
+
+            // Thoát sớm nếu đã tìm thấy link
+            if (foundLinks.size > 0) {
+                 console.log('[OPTIMIZATION] Tìm thấy link từ blob trong frame. Trả về ngay.');
+                 return Array.from(foundLinks);
             }
         }
+        
         return Array.from(foundLinks);
+
     } catch (error) {
-        console.error(`[PAGE] Lỗi khi xử lý trang ${targetUrl}:`, error.message);
+        console.error(`[PUPPETEER] Lỗi:`, error.message);
         return [];
     } finally {
-        if (page) await page.close();
-        console.log(`[PAGE] Đã đóng trang cho: ${targetUrl}`);
+        if (browser) await browser.close();
     }
 }
 
