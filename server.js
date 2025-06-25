@@ -26,13 +26,13 @@ if (!API_KEY) console.warn('[SECURITY WARNING] API_KEY chưa được thiết l�
 // --- Biến toàn cục cho trình duyệt và quản lý rule ---
 let browserInstance = null;
 let networkDetectionRules = [/application\/(vnd\.apple\.mpegurl|x-mpegurl)/i];
-let blobContentFilterRules = []; // --- THÊM MỚI ---: Mảng lưu các rule để lọc NỘI DUNG của blob
+let blobUrlFilterRules = []; // --- THAY ĐỔI ---: Mảng lưu các rule để lọc chính URL của blob
 
 // --- CÁC HÀM HELPER VÀ LÕI (ĐÃ CẬP NHẬT) ---
 const updateDetectionRules = async () => {
     // Reset rules trước mỗi lần cập nhật
     networkDetectionRules = [/application\/(vnd\.apple\.mpegurl|x-mpegurl)/i];
-    blobContentFilterRules = [];
+    blobUrlFilterRules = [];
 
     if (!RULE_URL) return console.log('[RULE MANAGER] Không có RULE_URL. Chỉ dùng rule content-type mặc định.');
     console.log(`[RULE MANAGER] Đang cập nhật rule từ: ${RULE_URL}`);
@@ -51,14 +51,14 @@ const updateDetectionRules = async () => {
         
         blobRulesRaw.forEach(r => {
             try {
-                // Lấy phần regex từ 'regex:blob:...' để lọc nội dung
-                blobContentFilterRules.push(new RegExp(r.substring(11).trim(), 'i'));
+                // Lấy phần regex từ 'regex:blob:...' để lọc URL
+                blobUrlFilterRules.push(new RegExp(r.substring(11).trim(), 'i'));
             } catch (e) { console.error(`[RULE MANAGER] Lỗi cú pháp rule lọc blob: "${r}". Bỏ qua.`); }
         });
 
-        console.log(`[RULE MANAGER] Cập nhật thành công! ${networkDetectionRules.length} rule mạng, ${blobContentFilterRules.length} rule lọc nội dung blob.`);
-        if (blobContentFilterRules.length > 0) {
-            console.log(`[RULE MANAGER] Các rule lọc nội dung blob: ${blobContentFilterRules.map(r => r.source).join(', ')}`);
+        console.log(`[RULE MANAGER] Cập nhật thành công! ${networkDetectionRules.length} rule mạng, ${blobUrlFilterRules.length} rule lọc URL blob.`);
+        if (blobUrlFilterRules.length > 0) {
+            console.log(`[RULE MANAGER] Các rule lọc URL blob: ${blobUrlFilterRules.map(r => r.source).join(', ')}`);
         }
 
     } catch (error) {
@@ -125,10 +125,10 @@ async function handleScrapeRequest(targetUrl, headers) {
             return { links: Array.from(foundLinks), contents: [] };
         }
         
-        // --- GIAI ĐOẠN 3: Bắt và LỌC BLOB (phương án cuối cùng) ---
+        // --- GIAI ĐOẠN 3: Bắt và LỌC BLOB URL (phương án cuối cùng) ---
         console.log('[GIAI ĐOẠN 3] Thất bại GĐ2. Chuyển sang bắt và lọc Blob (nếu có rule)...');
 
-        if (blobContentFilterRules.length === 0) {
+        if (blobUrlFilterRules.length === 0) {
             console.log('[BLOB RULE] Không có rule `regex:blob:...` nào được định nghĩa. Dừng lại.');
             return { links: [], contents: [] };
         }
@@ -151,6 +151,14 @@ async function handleScrapeRequest(targetUrl, headers) {
 
         if (interceptedBlobUrls.size > 0) {
             for (const blobUrl of interceptedBlobUrls) {
+                // --- LỌC URL BLOB ---
+                const isUrlMatch = blobUrlFilterRules.some(rule => rule.test(blobUrl));
+                if (!isUrlMatch) {
+                    console.log(`[BLOB FILTER] URL ${blobUrl} không khớp với rule. Bỏ qua.`);
+                    continue; // Bỏ qua và xét blob tiếp theo
+                }
+
+                console.log(`[BLOB FILTER] URL ${blobUrl} khớp với rule. Đang lấy nội dung...`);
                 const blobContent = await page.evaluate(async (bUrl) => {
                     try {
                         const response = await fetch(bUrl);
@@ -158,16 +166,9 @@ async function handleScrapeRequest(targetUrl, headers) {
                         return null;
                     } catch (e) { return null; }
                 }, blobUrl);
-
+                
                 if (blobContent) {
-                    // --- LỌC NỘI DUNG BLOB ---
-                    const isContentMatch = blobContentFilterRules.some(rule => rule.test(blobContent));
-                    if (isContentMatch) {
-                        console.log(`[BLOB FILTER] Nội dung từ ${blobUrl} khớp với rule. Đã lưu lại.`);
-                        foundContents.add(blobContent);
-                    } else {
-                        console.log(`[BLOB FILTER] Nội dung từ ${blobUrl} không khớp với rule. Bỏ qua.`);
-                    }
+                    foundContents.add(blobContent);
                 }
             }
         }
@@ -212,11 +213,12 @@ const handleApiResponse = (res, result, url) => {
 
 // --- DOCS & START SERVER ---
 const docsHtml = `<!DOCTYPE html><html lang="vi"><head><title>API Docs - M3U8 Scraper</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.6;padding:20px;max-width:900px;margin:0 auto;color:#333}h1,h2,h3{color:#111;border-bottom:1px solid #ddd;padding-bottom:10px;margin-top:30px}code{background-color:#f4f4f4;padding:2px 6px;border-radius:4px;font-family:"Courier New",Courier,monospace;color:#c7254e}pre{background-color:#f6f8fa;padding:15px;border-radius:5px;white-space:pre-wrap;word-wrap:break-word;border:1px solid #ddd}a{color:#0366d6;text-decoration:none}a:hover{text-decoration:underline}.endpoint{border:1px solid #eee;padding:0 20px 15px;border-radius:8px;margin-bottom:20px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.05)}li{margin-bottom:10px}.badge{color:white;padding:3px 8px;border-radius:12px;font-size:.8em;font-weight:700;margin-right:8px}.badge-post{background-color:#28a745}.badge-get{background-color:#007bff}</style></head><body><h1>API Docs - M3U8 Scraper</h1><p>API cào dữ liệu link M3U8 với hệ thống proxy, rule động, xác thực và tự động xử lý blob URL.</p><h2>Xác Thực</h2><div class="endpoint"><p>Mọi yêu cầu đến <code>/api/scrape</code> đều phải được xác thực bằng cách thêm tham số <code>key=YOUR_API_KEY</code> vào query string.</p></div><h2>Cấu Hình Server (.env)</h2><div class="endpoint"><p><strong>Proxy:</strong> <code>P_IP</code>, <code>P_PORT</code>, etc. | <strong>Rule Động:</strong> <code>RULE_URL</code>, <code>RULE_UPDATE_INTERVAL</code></p></div><h2>Cách Viết Rule (trong file <code>rules.txt</code>)</h2><div class="endpoint"><h3>Rule Bắt Link Mạng</h3><p>Sử dụng tiền tố <code>regex:</code> để bắt các URL mạng.</p><pre><code># Bắt các link kết thúc bằng .m3u8 hoặc .m3u8?
-regex:\\.m3u8(\\?|$)</code></pre><h3>Rule Lọc Nội Dung Blob (Mới)</h3><p>Sử dụng tiền tố <code>regex:blob:</code> để lọc nội dung text bên trong blob. Tính năng bắt blob chỉ được kích hoạt nếu có ít nhất một rule loại này.</p><pre><code># Chỉ giữ lại các blob M3U8 có chứa link trỏ đến domain 'kjl.bit'
+regex:\\.m3u8(\\?|$)</code></pre><h3>Rule Lọc URL Blob (Mới)</h3><p>Sử dụng tiền tố <code>regex:blob:</code> để lọc chính URL của blob (phần origin của nó). Tính năng bắt blob chỉ được kích hoạt nếu có ít nhất một rule loại này.</p><pre><code># Chỉ giữ lại các blob được tạo từ domain 'kjl.bit'
+# Sẽ khớp với 'blob:https://kjl.bit/...'
 regex:blob:kjl\\.bit
 
-# Chỉ giữ lại các blob có chứa chuỗi 'level=4'
-regex:blob:level=4</code></pre></div><h2><span class="badge badge-get">GET</span> /api/scrape</h2><div class="endpoint"><h3>Ví dụ</h3><pre><code>curl "http://localhost:3000/api/scrape?url=...&key=..."</code></pre></div></body></html>`;
+# Chỉ giữ lại các blob được tạo từ domain có chứa 'phimmoi'
+regex:blob:phimmoi</code></pre></div><h2><span class="badge badge-get">GET</span> /api/scrape</h2><div class="endpoint"><h3>Ví dụ</h3><pre><code>curl "http://localhost:3000/api/scrape?url=...&key=..."</code></pre></div></body></html>`;
 
 const startServer = async () => {
     await initializeBrowser();
