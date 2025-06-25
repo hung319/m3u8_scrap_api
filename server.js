@@ -225,7 +225,7 @@ const initializeBrowser = async () => {
         browserInstance = await puppeteer.launch({
             headless: "new",
             args: launchArgs,
-            executablePath: process.env.CHROME_BIN || '/usr/bin/chromium-browser' // Linh hoạt hơn
+            executablePath: process.env.CHROME_BIN || '/usr/bin/chromium' // Linh hoạt hơn
         });
         console.log('[BROWSER] Trình duyệt đã sẵn sàng!');
     } catch (error) {
