@@ -31,12 +31,8 @@ if (!API_KEY) console.warn('[SECURITY WARNING] API_KEY chưa được thiết l�
 let browserInstance = null;
 let detectionRules = [/application\/(vnd\.apple\.mpegurl|x-mpegurl)/i];
 
-// --- CÁC HÀM HELPER VÀ LÕI (Không thay đổi nhiều) ---
-const updateDetectionRules = async () => { /* ... giữ nguyên như cũ ... */ };
-const apiKeyMiddleware = (req, res, next) => { /* ... giữ nguyên như cũ ... */ };
-async function uploadToDpaste(content) { /* ... giữ nguyên như cũ ... */ };
+// --- CÁC HÀM HELPER VÀ LÕI ---
 
-// (Dán các hàm updateDetectionRules, apiKeyMiddleware, uploadToDpaste từ phiên bản trước vào đây)
 const updateDetectionRules = async () => {
     if (!RULE_URL) return console.log('[RULE MANAGER] Không có RULE_URL. Chỉ dùng rule Content-Type mặc định.');
     console.log(`[RULE MANAGER] Đang cập nhật rule từ: ${RULE_URL}`);
@@ -110,8 +106,7 @@ async function handleScrapeRequest(targetUrl, headers) {
             console.log(`[PAGE] Đang mở trang mới cho: ${targetUrl}`);
             page = await browserInstance.newPage();
 
-            // <<< CẢI TIẾN LỚN #1: Bắt Blob URL bằng cách ghi đè JS >>>
-            // Hàm này sẽ được gọi từ phía trình duyệt khi nó phát hiện blob
+            // Bắt Blob URL bằng cách ghi đè JS
             await page.exposeFunction('onBlobCreated', async (blobUrl) => {
                 if (resolved) return;
                 console.log(`[BLOB INTERCEPTOR] Đã bắt được blob URL được tạo: ${blobUrl}`);
@@ -130,12 +125,10 @@ async function handleScrapeRequest(targetUrl, headers) {
                 }
             });
             
-            // Script này được tiêm vào trang TRƯỚC KHI bất kỳ script nào của trang chạy.
             await page.evaluateOnNewDocument(() => {
                 const originalCreateObjectURL = URL.createObjectURL;
                 URL.createObjectURL = function(blob) {
                     const url = originalCreateObjectURL.apply(this, arguments);
-                    // Gọi hàm đã được expose từ Node.js
                     window.onBlobCreated(url); 
                     return url;
                 };
@@ -166,12 +159,10 @@ async function handleScrapeRequest(targetUrl, headers) {
 
             console.log('[INTERACTION] Phân tích mạng ban đầu hoàn tất. Thử kích hoạt video...');
             
-            // <<< CẢI TIẾN LỚN #2: Kích hoạt video không phụ thuộc CSS >>>
             const interactionResult = await page.evaluate(async () => {
                 const video = Array.from(document.querySelectorAll('video')).find(v => v.offsetWidth > 0 || v.offsetHeight > 0);
                 if (!video) return 'Không tìm thấy video nào đang hiển thị.';
                 
-                // Cố gắng play trực tiếp, nếu lỗi thì click (phương pháp phổ quát)
                 try {
                     await video.play();
                     return 'Lệnh video.play() đã được gửi thành công.';
@@ -194,11 +185,16 @@ async function handleScrapeRequest(targetUrl, headers) {
     });
 }
 
-// --- API ENDPOINTS VÀ SERVER STARTUP (Giữ nguyên) ---
-app.all('/api/scrape', apiKeyMiddleware, async (req, res) => { /* ... giữ nguyên như cũ ... */ });
-const initializeBrowser = async () => { /* ... giữ nguyên như cũ ... */ };
-const startServer = async () => { /* ... giữ nguyên như cũ ... */ };
-const docsHtml = `...`; // Giữ nguyên HTML docs
+
+// --- API ENDPOINTS VÀ SERVER STARTUP ---
+
+const docsHtml = `<!DOCTYPE html><html lang="vi"><head><title>API Docs - M3U8 Scraper</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.6;padding:20px;max-width:900px;margin:0 auto;color:#333}h1,h2,h3{color:#111;border-bottom:1px solid #ddd;padding-bottom:10px;margin-top:30px}code{background-color:#f4f4f4;padding:2px 6px;border-radius:4px;font-family:"Courier New",Courier,monospace;color:#c7254e}pre{background-color:#f6f8fa;padding:15px;border-radius:5px;white-space:pre-wrap;word-wrap:break-word;border:1px solid #ddd}a{color:#0366d6;text-decoration:none}a:hover{text-decoration:underline}.endpoint{border:1px solid #eee;padding:0 20px 15px;border-radius:8px;margin-bottom:20px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.05)}li{margin-bottom:10px}.badge{color:white;padding:3px 8px;border-radius:12px;font-size:.8em;font-weight:700;margin-right:8px}.badge-all{background-color:#6c757d}</style></head><body><h1>API Docs - M3U8 Scraper (v3 - Interceptor)</h1><p>API cào dữ liệu link M3U8 với hệ thống proxy, rule động, và cơ chế bắt link blob/network trực tiếp.</p><h2>Xác Thực</h2><div class="endpoint"><p>Mọi yêu cầu đến <code>/api/scrape</code> đều phải được xác thực bằng cách thêm tham số <code>key=YOUR_API_KEY</code> vào query string hoặc trong body của request POST.</p></div><h2>Cấu Hình Server (.env)</h2><div class="endpoint"><p><strong>Proxy:</strong> <code>P_IP</code>, <code>P_PORT</code>, etc. | <strong>Rule Động:</strong> <code>RULE_URL</code>, <code>RULE_UPDATE_INTERVAL</code> | <strong>Timeout Tổng:</strong> <code>GLOBAL_TIMEOUT</code> (tính bằng mili-giây, ví dụ: 90000 cho 90 giây)</p></div><h2><span class="badge badge-all">GET/POST</span> /api/scrape</h2><div class="endpoint"><p>Endpoint này chấp nhận cả hai phương thức GET và POST.</p><pre><code>// Sử dụng GET
+curl "http://localhost:3000/api/scrape?url=...&key=...&referer=..."
+
+// Sử dụng POST
+curl -X POST "http://localhost:3000/api/scrape?key=..." \\
+-H "Content-Type: application/json" \\
+-d '{"url": "...", "headers": {"Referer": "..."}}'</code></pre></div></body></html>`;
 
 app.all('/api/scrape', apiKeyMiddleware, async (req, res) => {
     const { url, headers = {}, referer } = { ...req.query, ...req.body };
@@ -227,7 +223,7 @@ const initializeBrowser = async () => {
         '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
         '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote',
         '--single-process', '--disable-gpu', '--window-size=1280,720',
-        '--autoplay-policy=no-user-gesture-required' // Thử thêm cờ này để dễ play video hơn
+        '--autoplay-policy=no-user-gesture-required'
     ];
     if (globalProxyUrl) launchArgs.push(`--proxy-server=${globalProxyUrl}`);
 
@@ -237,7 +233,7 @@ const initializeBrowser = async () => {
             args: launchArgs,
             executablePath: process.env.CHROME_BIN || null, 
             userDataDir: '/usr/src/app/.browser-cache',
-            ignoreDefaultArgs: ['--mute-audio'] // Cho phép video có tiếng, đôi khi cần thiết
+            ignoreDefaultArgs: ['--mute-audio']
         });
         console.log('[BROWSER] Trình duyệt đã sẵn sàng!');
     } catch (error) {
