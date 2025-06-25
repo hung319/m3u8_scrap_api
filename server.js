@@ -121,13 +121,34 @@ const handleResponse = async (response, foundLinks) => {
 
 // --- LOGIC SCRAPE CHÍNH ---
 
-async function handleScrapeRequest(targetUrl, headers) {
+// Thay thế hàm này trong file server.js của bạn
+
+async function findM3u8LinksWithPuppeteer(targetUrl, customHeaders = {}) {
     console.log(`[PUPPETEER] Bắt đầu phiên làm việc cho: ${targetUrl}`);
     const launchArgs = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'];
     if (globalProxyUrl) launchArgs.push(`--proxy-server=${globalProxyUrl}`);
     
     const foundLinks = new Set();
     let browser = null;
+    let page = null;
+
+    // Tạo một "công tắc" để có thể đóng phiên làm việc sớm
+    let earlyExitController = null;
+    const earlyExitPromise = new Promise(resolve => {
+        earlyExitController = resolve;
+    });
+
+    const closeSession = async () => {
+        if (page) {
+            // Hủy đăng ký tất cả các listener để tránh lỗi
+            page.removeAllListeners('response');
+            page.removeAllListeners('framecreated');
+        }
+        if (browser && browser.isConnected()) {
+            await browser.close();
+        }
+        console.log('[OPTIMIZATION] Đã đóng phiên làm việc sớm.');
+    };
 
     try {
         browser = await puppeteer.launch({
@@ -135,19 +156,37 @@ async function handleScrapeRequest(targetUrl, headers) {
             args: launchArgs,
             executablePath: '/usr/bin/chromium'
         });
-        const page = await browser.newPage();
+        page = await browser.newPage();
         
         await page.setRequestInterception(true);
         page.on('request', r => ['image', 'stylesheet', 'font'].includes(r.resourceType()) ? r.abort() : r.continue());
 
-        if (Object.keys(headers).length > 0) await page.setExtraHTTPHeaders(headers);
-
-        page.on('response', r => handleResponse(r, foundLinks));
-        page.on('framecreated', async f => f.on('response', r => handleResponse(r, foundLinks)));
+        if (Object.keys(customHeaders).length > 0) await page.setExtraHTTPHeaders(customHeaders);
         
-        await page.goto(targetUrl, { waitUntil: 'networkidle0', timeout: 60000 });
-        console.log('[PUPPETEER] Trang đã tải, đang tương tác và quét blob...');
+        // Cập nhật handleResponse để kích hoạt earlyExit
+        const customHandleResponse = async (response) => {
+            await handleResponse(response, foundLinks);
+            if (foundLinks.size > 0) {
+                console.log('[OPTIMIZATION] Link được tìm thấy từ request mạng. Kích hoạt thoát sớm...');
+                earlyExitController(); // Kích hoạt "công tắc"
+            }
+        };
 
+        page.on('response', customHandleResponse);
+        page.on('framecreated', async f => f.on('response', customHandleResponse));
+        
+        // Chạy song song việc tải trang và việc chờ tín hiệu thoát sớm
+        const navigationPromise = page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+        await Promise.race([navigationPromise, earlyExitPromise]);
+
+        // CHECKPOINT 1: Kiểm tra sau khi tải trang
+        if (foundLinks.size > 0) {
+            await closeSession();
+            return Array.from(foundLinks);
+        }
+        console.log('[PUPPETEER] Trang đã tải xong, chưa có link. Bắt đầu tương tác...');
+
+        // Tương tác với trang
         try {
             const videoElement = await page.waitForSelector('video', { timeout: 5000 });
             if (videoElement) await videoElement.click();
@@ -158,25 +197,45 @@ async function handleScrapeRequest(targetUrl, headers) {
             } catch (e2) {}
         }
         
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        // Chờ sau tương tác
+        await Promise.race([
+            new Promise(resolve => setTimeout(resolve, 5000)),
+            earlyExitPromise
+        ]);
+
+        // CHECKPOINT 2: Kiểm tra sau khi tương tác
+        if (foundLinks.size > 0) {
+            await closeSession();
+            return Array.from(foundLinks);
+        }
+        console.log('[PUPPETEER] Tương tác xong, chưa có link. Bắt đầu quét blob...');
         
+        // Quét Blob
         const blobUrls = await page.$$eval('video, audio', els => els.map(el => el.src).filter(src => src && src.startsWith('blob:')));
         for (const blobUrl of blobUrls) {
-            const m3u8Content = await page.evaluate(async (bUrl) => {
-                try { return await (await fetch(bUrl)).text(); } catch (e) { return null; }
-            }, blobUrl);
+            const m3u8Content = await page.evaluate(async (bUrl) => { try { return await (await fetch(bUrl)).text(); } catch (e) { return null; } }, blobUrl);
             if (m3u8Content && m3u8Content.includes('#EXTM3U')) {
                 const rawLink = await uploadToDpaste(m3u8Content);
                 if (rawLink) foundLinks.add(rawLink);
+                // CHECKPOINT 3: Kiểm tra ngay sau khi xử lý một blob
+                if (foundLinks.size > 0) {
+                    await closeSession();
+                    return Array.from(foundLinks);
+                }
             }
         }
-
+        
+        console.log(`[PUPPETEER] Hoàn tất toàn bộ quá trình. Tìm thấy tổng cộng ${foundLinks.size} link.`);
         return Array.from(foundLinks);
+
     } catch (error) {
         console.error(`[PUPPETEER] Lỗi:`, error.message);
         return [];
     } finally {
-        if (browser) await browser.close();
+        // Đảm bảo trình duyệt luôn được đóng nếu chưa được đóng sớm
+        if (browser && browser.isConnected()) {
+            await browser.close();
+        }
     }
 }
 
