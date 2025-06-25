@@ -25,7 +25,6 @@ if (!API_KEY) console.warn('[SECURITY WARNING] API_KEY chưa được thiết l�
 
 // --- Biến toàn cục cho trình duyệt và quản lý rule ---
 let browserInstance = null;
-// --- QUAN TRỌNG: Rule mặc định đã được tích hợp sẵn, không cần thêm rule content-type vào file rules.txt nữa ---
 let detectionRules = [/application\/(vnd\.apple\.mpegurl|x-mpegurl)/i];
 
 // --- CÁC HÀM HELPER VÀ LÕI ---
@@ -38,7 +37,6 @@ const updateDetectionRules = async () => {
             try { return new RegExp(l.substring(6).trim(), 'i'); }
             catch (e) { console.error(`[RULE MANAGER] Lỗi cú pháp rule: "${l}". Bỏ qua.`); return null; }
         }).filter(Boolean);
-        // Kết hợp rule mặc định với các rule từ xa
         detectionRules = [/application\/(vnd\.apple\.mpegurl|x-mpegurl)/i, ...remoteRules];
         console.log(`[RULE MANAGER] Cập nhật thành công! Tổng số rule: ${detectionRules.length}`);
     } catch (error) {
@@ -70,10 +68,6 @@ const handleResponse = (response, foundLinks) => {
     const requestUrl = response.url();
     if (requestUrl.startsWith('data:')) return;
     const contentType = response.headers()['content-type'] || '';
-    
-    // Thêm log để debug nếu cần
-    // console.log(`[DEBUG] Checking URL: ${requestUrl} | Content-Type: ${contentType}`);
-
     const isMatchByRule = detectionRules.some(rule => rule.test(requestUrl) || rule.test(contentType));
     if (isMatchByRule && !requestUrl.endsWith('.ts')) {
         console.log(`[+] Đã bắt được link M3U8 (khớp với Rule): ${requestUrl}`);
@@ -81,7 +75,7 @@ const handleResponse = (response, foundLinks) => {
     }
 };
 
-// --- LOGIC SCRAPE CHÍNH (PHỤC HỒI PHƯƠNG PHÁP TỪ FILE GỐC) ---
+// --- LOGIC SCRAPE CHÍNH (LOGIC LAI CUỐI CÙNG) ---
 async function handleScrapeRequest(targetUrl, headers) {
     if (!browserInstance) throw new Error("Trình duyệt chưa sẵn sàng.");
 
@@ -94,55 +88,70 @@ async function handleScrapeRequest(targetUrl, headers) {
         await page.setRequestInterception(true);
         page.on('request', r => ['image', 'stylesheet', 'font'].includes(r.resourceType()) ? r.abort() : r.continue());
         if (Object.keys(headers).length > 0) await page.setExtraHTTPHeaders(headers);
-
         page.on('response', r => handleResponse(r, foundLinks));
         page.on('framecreated', async f => f.on('response', r => handleResponse(r, foundLinks)));
 
-        // GIAI ĐOẠN 1: Tải trang
+        // --- GIAI ĐOẠN 1: Lắng nghe thụ động để tìm link mạng ---
+        console.log('[GIAI ĐOẠN 1] Đang lắng nghe link mạng...');
         await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-        if (foundLinks.size > 0) {
-            console.log('[ƯU TIÊN] Tìm thấy link mạng ngay khi tải trang. Trả về ngay.');
-            return Array.from(foundLinks);
-        }
-
-        // GIAI ĐOẠN 2: Tương tác theo cách của file gốc (hiệu quả đã được chứng minh)
-        console.log('[TƯƠNG TÁC] Thử click vào video/nút play...');
-        try {
-            const videoElement = await page.waitForSelector('video', { timeout: 3000, visible: true });
-            if (videoElement) await videoElement.click({ delay: 100 }); // Thêm delay nhỏ
-        } catch (e) {
-            try {
-                const playButton = await page.waitForSelector('[class*="play"], [aria-label*="Play"], [aria-label*="Phát"]', { timeout: 2000, visible: true });
-                if (playButton) await playButton.click({ delay: 100 });
-            } catch (e2) {
-                console.log('[TƯƠNG TÁC] Không tìm thấy phần tử video hoặc nút play để click.');
-            }
-        }
         
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        // Chờ thêm một khoảng thời gian ngắn để các script chạy xong
+        await new Promise(resolve => setTimeout(resolve, 8000)); 
+
         if (foundLinks.size > 0) {
-            console.log('[ƯU TIÊN] Tìm thấy link mạng sau khi tương tác. Trả về ngay.');
+            console.log('[THÀNH CÔNG GĐ1] Tìm thấy link mạng! Trả về ngay.');
             return Array.from(foundLinks);
         }
 
-        // GIAI ĐOẠN 3: Xử lý blob theo cách của file gốc (an toàn, không can thiệp)
-        console.log('[CUỐI CÙNG] Không tìm thấy link mạng. Chuyển sang quét Blob.');
-        const blobUrls = await page.$$eval('video, audio', els => els.map(el => el.src).filter(src => src && src.startsWith('blob:')));
-        if (blobUrls.length > 0) {
-            console.log(`[BLOB SCANNER] Tìm thấy ${blobUrls.length} blob URL trong DOM. Đang xử lý...`);
-            for (const blobUrl of blobUrls) {
-                const m3u8Content = await page.evaluate(async (bUrl) => { try { return await (await fetch(bUrl)).text(); } catch (e) { return null; } }, blobUrl);
-                if (m3u8Content && m3u8Content.trim().includes('#EXTM3U')) {
-                    const rawLink = await uploadToDpaste(m3u8Content);
+        // --- GIAI ĐOẠN 2: Kích hoạt chế độ bắt BLOB nếu GĐ1 thất bại ---
+        console.log('[GIAI ĐOẠN 2] Không có link mạng. Chuyển sang chế độ bắt Blob và tải lại trang.');
+        const interceptedBlobUrls = new Set();
+        await page.exposeFunction('reportBlobUrlToNode', (blobUrl) => {
+            if (blobUrl && blobUrl.startsWith('blob:')) {
+                console.log(`[BLOB INTERCEPTOR] Bắt được blob: ${blobUrl}`);
+                interceptedBlobUrls.add(blobUrl);
+            }
+        });
+
+        await page.evaluateOnNewDocument(() => {
+            const originalCreateObjectURL = URL.createObjectURL;
+            URL.createObjectURL = function(obj) {
+                const blobUrl = originalCreateObjectURL.apply(this, arguments);
+                window.reportBlobUrlToNode(blobUrl);
+                return blobUrl;
+            };
+        });
+
+        // Tải lại trang với cơ chế bắt blob đã được kích hoạt
+        await page.reload({ waitUntil: 'networkidle2', timeout: 60000 });
+        await new Promise(resolve => setTimeout(resolve, 5000)); // Chờ blob được tạo
+
+        if (interceptedBlobUrls.size > 0) {
+            const processedLinks = new Set();
+            console.log(`[BLOB SCANNER] Tìm thấy ${interceptedBlobUrls.size} blob. Đang xử lý...`);
+            for (const blobUrl of interceptedBlobUrls) {
+                const blobContent = await page.evaluate(async (bUrl) => {
+                    try {
+                        const response = await fetch(bUrl);
+                        return await response.text();
+                    } catch (e) {
+                        return null;
+                    }
+                }, blobUrl);
+
+                if (blobContent) {
+                    console.log(`[BLOB SCANNER] Lấy được nội dung từ ${blobUrl}. Đang đăng tải...`);
+                    const rawLink = await uploadToDpaste(blobContent);
                     if (rawLink) {
-                        foundLinks.add(rawLink);
-                        return Array.from(foundLinks); // Trả về ngay
+                        console.log(`[BLOB SCANNER] Đăng tải thành công: ${rawLink}`);
+                        processedLinks.add(rawLink);
                     }
                 }
             }
+            return Array.from(processedLinks);
         }
-        
-        return Array.from(foundLinks);
+
+        return []; // Trả về mảng rỗng nếu cả 2 giai đoạn đều thất bại
     } catch (error) {
         console.error(`[PAGE] Lỗi khi xử lý trang ${targetUrl}:`, error.message);
         return [];
@@ -169,7 +178,7 @@ app.post('/api/scrape', apiKeyMiddleware, async (req, res) => {
 });
 const handleApiResponse = (res, links, url) => {
     if (links.length > 0) res.json({ success: true, count: links.length, source: url, links });
-    else res.json({ success: false, message: 'Không tìm thấy link M3U8 nào.', source: url, links: [] });
+    else res.json({ success: false, message: 'Không tìm thấy link nào.', source: url, links: [] });
 };
 
 // --- DOCS & START SERVER ---
@@ -196,7 +205,7 @@ const initializeBrowser = async () => {
         browserInstance = await puppeteer.launch({
             headless: "new",
             args: launchArgs,
-            executablePath: '/usr/bin/chromium', 
+            executablePath: '/usr/bin/chromium',
             userDataDir: '/usr/src/app/.browser-cache'
         });
         console.log('[BROWSER] Trình duyệt đã sẵn sàng!');
