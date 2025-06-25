@@ -32,9 +32,6 @@ let browserInstance = null;
 let detectionRules = [/application\/(vnd\.apple\.mpegurl|x-mpegurl)/i];
 
 // --- CÁC HÀM HELPER VÀ LÕI (Giữ nguyên) ---
-const updateDetectionRules = async () => { /* ... */ };
-const apiKeyMiddleware = (req, res, next) => { /* ... */ };
-async function uploadToDpaste(content) { /* ... */ };
 
 // (Dán các hàm updateDetectionRules, apiKeyMiddleware, uploadToDpaste từ phiên bản trước vào đây)
 const updateDetectionRules = async () => {
