@@ -1,21 +1,20 @@
-// Dễ dàng sao chép toàn bộ mã nguồn
 require('dotenv').config();
 
+// --- 1. KHAI BÁO THƯ VIỆN ---
 const express = require('express');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const axios = require('axios');
 const { SocksProxyAgent } = require('socks-proxy-agent');
 const FormData = require('form-data');
-const url = require('url');
 
+// --- 2. KHỞI TẠO BAN ĐẦU ---
 puppeteer.use(StealthPlugin());
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 app.use(express.json());
 
-// --- CẤU HÌNH SERVER ---
+// --- 3. CẤU HÌNH SERVER & BIẾN TOÀN CỤC ---
 const { API_KEY, P_IP, P_PORT, P_USER, P_PASSWORD, RULE_URL, RULE_UPDATE_INTERVAL, GLOBAL_TIMEOUT } = process.env;
 
 let globalProxyUrl = null;
@@ -27,13 +26,11 @@ if (P_IP && P_PORT) {
 }
 if (!API_KEY) console.warn('[SECURITY WARNING] API_KEY chưa được thiết lập!');
 
-// --- Biến toàn cục cho trình duyệt và quản lý rule ---
 let browserInstance = null;
 let detectionRules = [/application\/(vnd\.apple\.mpegurl|x-mpegurl)/i];
 
-// --- CÁC HÀM HELPER VÀ LÕI (Giữ nguyên) ---
+// --- 4. CÁC HÀM HELPER (KHAI BÁO MỘT LẦN DUY NHẤT) ---
 
-// (Dán các hàm updateDetectionRules, apiKeyMiddleware, uploadToDpaste từ phiên bản trước vào đây)
 const updateDetectionRules = async () => {
     if (!RULE_URL) return console.log('[RULE MANAGER] Không có RULE_URL. Chỉ dùng rule Content-Type mặc định.');
     console.log(`[RULE MANAGER] Đang cập nhật rule từ: ${RULE_URL}`);
@@ -49,11 +46,13 @@ const updateDetectionRules = async () => {
         console.error(`[RULE MANAGER] Lỗi khi tải file rule: ${error.message}`);
     }
 };
+
 const apiKeyMiddleware = (req, res, next) => {
     if (!API_KEY) return res.status(503).json({ success: false, message: 'Dịch vụ không được cấu hình.' });
     if (req.query.key === API_KEY || (req.body && req.body.key === API_KEY)) return next();
     res.status(401).json({ success: false, message: 'Unauthorized: API Key không hợp lệ hoặc bị thiếu.' });
 };
+
 async function uploadToDpaste(content) {
     try {
         const form = new FormData();
@@ -70,8 +69,8 @@ async function uploadToDpaste(content) {
     }
 }
 
+// --- 5. LOGIC SCRAPE CỐT LÕI ---
 
-// --- LOGIC SCRAPE CHÍNH (PHIÊN BẢN TOÀN DIỆN) ---
 async function handleScrapeRequest(targetUrl, headers) {
     if (!browserInstance) throw new Error("Trình duyệt chưa sẵn sàng.");
 
@@ -99,7 +98,6 @@ async function handleScrapeRequest(targetUrl, headers) {
         try {
             page = await browserInstance.newPage();
 
-            // --- CƠ CHẾ BẮT BLOB (Mạnh mẽ) ---
             await page.exposeFunction('onBlobCreated', async (blobUrl) => {
                 if (resolved) return;
                 console.log(`[BLOB INTERCEPTOR] Đã bắt được blob URL: ${blobUrl}`);
@@ -118,12 +116,13 @@ async function handleScrapeRequest(targetUrl, headers) {
                 const originalCreateObjectURL = URL.createObjectURL;
                 URL.createObjectURL = function() {
                     const url = originalCreateObjectURL.apply(this, arguments);
-                    window.onBlobCreated(url); 
+                    if (typeof window.onBlobCreated === 'function') {
+                        window.onBlobCreated(url); 
+                    }
                     return url;
                 };
             });
 
-            // --- CƠ CHẾ BẮT NETWORK (Được nâng cấp để mạnh mẽ hơn) ---
             page.on('response', async (response) => {
                 if (resolved) return;
                 const requestUrl = response.url();
@@ -135,7 +134,6 @@ async function handleScrapeRequest(targetUrl, headers) {
                 if (isMatchByRule && !requestUrl.endsWith('.ts')) {
                     console.log(`[NETWORK INTERCEPTOR] Phát hiện URL khớp rule: ${requestUrl}`);
                     try {
-                        // <<< CẢI TIẾN QUAN TRỌNG: Xác thực nội dung link network >>>
                         const text = await response.text();
                         if (text && text.includes('#EXTM3U')) {
                             console.log(`[NETWORK INTERCEPTOR] Link đã được xác thực là M3U8. Bắt link!`);
@@ -144,9 +142,7 @@ async function handleScrapeRequest(targetUrl, headers) {
                         } else {
                             console.log(`[NETWORK INTERCEPTOR] URL khớp rule nhưng không phải M3U8. Bỏ qua.`);
                         }
-                    } catch (e) {
-                        // Bỏ qua lỗi nếu không đọc được body (vd: redirect, no content)
-                    }
+                    } catch (e) { /* Bỏ qua lỗi nếu không đọc được body */ }
                 }
             });
 
@@ -157,7 +153,6 @@ async function handleScrapeRequest(targetUrl, headers) {
             console.log('[NAVIGATE] Đang điều hướng đến trang...');
             await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
             
-            // <<< CHỐT CHẶN LOGIC THOÁT SỚM >>>
             if (resolved) {
                 console.log('[OPTIMIZATION] Đã tìm thấy link trong lúc tải trang. Bỏ qua bước tương tác.');
                 return;
@@ -188,13 +183,16 @@ async function handleScrapeRequest(targetUrl, headers) {
     });
 }
 
-// --- API ENDPOINTS VÀ SERVER STARTUP (Giữ nguyên) ---
-const docsHtml = `...`; // Giữ nguyên HTML docs
-app.all('/api/scrape', apiKeyMiddleware, async (req, res) => { /* ... */ });
-const initializeBrowser = async () => { /* ... */ };
-const startServer = async () => { /* ... */ };
+// --- 6. API ENDPOINTS & DOCS ---
 
-// (Dán các hàm docsHtml, app.all, initializeBrowser, startServer từ phiên bản trước vào đây)
+const docsHtml = `<!DOCTYPE html><html lang="vi"><head><title>API Docs - M3U8 Scraper</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.6;padding:20px;max-width:900px;margin:0 auto;color:#333}h1,h2,h3{color:#111;border-bottom:1px solid #ddd;padding-bottom:10px;margin-top:30px}code{background-color:#f4f4f4;padding:2px 6px;border-radius:4px;font-family:"Courier New",Courier,monospace;color:#c7254e}pre{background-color:#f6f8fa;padding:15px;border-radius:5px;white-space:pre-wrap;word-wrap:break-word;border:1px solid #ddd}a{color:#0366d6;text-decoration:none}a:hover{text-decoration:underline}.endpoint{border:1px solid #eee;padding:0 20px 15px;border-radius:8px;margin-bottom:20px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.05)}li{margin-bottom:10px}.badge{color:white;padding:3px 8px;border-radius:12px;font-size:.8em;font-weight:700;margin-right:8px}.badge-all{background-color:#6c757d}</style></head><body><h1>API Docs - M3U8 Scraper (Final Version)</h1><p>API cào dữ liệu link M3U8 với hệ thống proxy, rule động, và cơ chế bắt link blob/network trực tiếp.</p><h2>Xác Thực</h2><div class="endpoint"><p>Mọi yêu cầu đến <code>/api/scrape</code> đều phải được xác thực bằng cách thêm tham số <code>key=YOUR_API_KEY</code> vào query string hoặc trong body của request POST.</p></div><h2><span class="badge badge-all">GET/POST</span> /api/scrape</h2><div class="endpoint"><p>Endpoint này chấp nhận cả hai phương thức GET và POST.</p><pre><code>// Sử dụng GET
+curl "http://localhost:3000/api/scrape?url=...&key=...&referer=..."
+
+// Sử dụng POST
+curl -X POST "http://localhost:3000/api/scrape" \\
+-H "Content-Type: application/json" \\
+-d '{"url": "...", "key": "...", "headers": {"Referer": "..."}}'</code></pre></div></body></html>`;
+
 app.all('/api/scrape', apiKeyMiddleware, async (req, res) => {
     const { url, headers = {}, referer } = { ...req.query, ...req.body };
     if (!url) return res.status(400).json({ success: false, message: 'Vui lòng cung cấp "url".' });
@@ -214,6 +212,13 @@ app.all('/api/scrape', apiKeyMiddleware, async (req, res) => {
         res.status(500).json({ success: false, message: `Lỗi máy chủ: ${error.message}`, source: url });
     }
 });
+
+app.get('/docs', (req, res) => res.setHeader('Content-Type', 'text/html').send(docsHtml));
+app.get('/', (req, res) => res.redirect('/docs'));
+
+
+// --- 7. KHỞI CHẠY SERVER ---
+
 const initializeBrowser = async () => {
     console.log('[BROWSER] Đang khởi tạo instance trình duyệt toàn cục...');
     const launchArgs = [
@@ -234,14 +239,14 @@ const initializeBrowser = async () => {
         process.exit(1);
     }
 };
+
 const startServer = async () => {
     await initializeBrowser();
     await updateDetectionRules();
     const updateIntervalMinutes = parseInt(RULE_UPDATE_INTERVAL, 10) || 60;
     setInterval(updateDetectionRules, updateIntervalMinutes * 60 * 1000);
     console.log(`[RULE MANAGER] Đã lên lịch cập nhật rule mỗi ${updateIntervalMinutes} phút.`);
-    app.get('/docs', (req, res) => res.setHeader('Content-Type', 'text/html').send(docsHtml));
-    app.get('/', (req, res) => res.redirect('/docs'));
+    
     app.listen(PORT, () => console.log(`Server hiệu năng cao đang chạy tại http://localhost:${PORT}`));
 };
 
