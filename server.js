@@ -1,22 +1,21 @@
 require('dotenv').config();
-
 const express = require('express');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const axios = require('axios');
 const url = require('url');
 const { SocksProxyAgent } = require('socks-proxy-agent');
-const FormData = require('form-data'); // --- QUAN TRỌNG: Đã thêm lại FormData ---
+const FormData = require('form-data');
 
 puppeteer.use(StealthPlugin());
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
 app.use(express.json());
 
 // --- CẤU HÌNH SERVER ---
 const { API_KEY, P_IP, P_PORT, P_USER, P_PASSWORD, RULE_URL, RULE_UPDATE_INTERVAL } = process.env;
-
 let globalProxyUrl = null;
 if (P_IP && P_PORT) {
     const authPart = (P_USER && P_PASSWORD) ? `${P_USER}:${P_PASSWORD}@` : '';
@@ -27,39 +26,34 @@ if (!API_KEY) console.warn('[SECURITY WARNING] API_KEY chưa được thiết l�
 // --- Biến toàn cục cho trình duyệt và quản lý rule ---
 let browserInstance = null;
 let networkDetectionRules = [/application\/(vnd\.apple\.mpegurl|x-mpegurl)/i];
-let blobUrlFilterRules = []; 
+let blobUrlFilterRules = [];
 
-// --- CÁC HÀM HELPER VÀ LÕI ---
+// --- CÁC HÀM HELPER VÀ LỖI ---
 const updateDetectionRules = async () => {
     networkDetectionRules = [/application\/(vnd\.apple\.mpegurl|x-mpegurl)/i];
     blobUrlFilterRules = [];
-
     if (!RULE_URL) return console.log('[RULE MANAGER] Không có RULE_URL. Chỉ dùng rule content-type mặc định.');
     console.log(`[RULE MANAGER] Đang cập nhật rule từ: ${RULE_URL}`);
     try {
         const { data } = await axios.get(RULE_URL);
         const allRules = data.split('\n').map(l => l.trim().toLowerCase()).filter(Boolean);
-
         const networkRulesRaw = allRules.filter(r => r.startsWith('regex:') && !r.startsWith('regex:blob:'));
         const blobRulesRaw = allRules.filter(r => r.startsWith('regex:blob:'));
-
         networkRulesRaw.forEach(r => {
             try { networkDetectionRules.push(new RegExp(r.substring(6).trim(), 'i')); }
             catch (e) { console.error(`[RULE MANAGER] Lỗi cú pháp rule mạng: "${r}". Bỏ qua.`); }
         });
-        
         blobRulesRaw.forEach(r => {
             try { blobUrlFilterRules.push(new RegExp(r.substring(11).trim(), 'i')); }
             catch (e) { console.error(`[RULE MANAGER] Lỗi cú pháp rule lọc blob: "${r}". Bỏ qua.`); }
         });
-
         console.log(`[RULE MANAGER] Cập nhật thành công! ${networkDetectionRules.length} rule mạng, ${blobUrlFilterRules.length} rule lọc URL blob.`);
     } catch (error) {
         console.error(`[RULE MANAGER] Lỗi khi tải file rule: ${error.message}`);
     }
 };
 
-// --- QUAN TRỌNG: Đã thêm lại hàm uploadToDpaste ---
+// --- Upload nội dung lên dpaste.org ---
 async function uploadToDpaste(content) {
     try {
         const form = new FormData();
@@ -173,11 +167,9 @@ const universalAutoplayScript = `
 // --- LOGIC SCRAPE CHÍNH ---
 async function handleScrapeRequest(targetUrl, headers) {
     if (!browserInstance) throw new Error("Trình duyệt chưa sẵn sàng.");
-
     let page = null;
     const foundLinks = new Set();
     console.log(`[PAGE] Đang mở trang mới cho: ${targetUrl}`);
-
     try {
         page = await browserInstance.newPage();
         page.on('console', msg => console.log('PAGE LOG:', msg.text()));
@@ -186,22 +178,18 @@ async function handleScrapeRequest(targetUrl, headers) {
         if (Object.keys(headers).length > 0) await page.setExtraHTTPHeaders(headers);
         page.on('response', r => handleResponse(r, foundLinks));
         page.on('framecreated', async f => f.on('response', r => handleResponse(r, foundLinks)));
-
         // GIAI ĐOẠN 1
         console.log('[GIAI ĐOẠN 1] Đang lắng nghe link mạng...');
         await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         if (foundLinks.size > 0) return Array.from(foundLinks);
-
         // GIAI ĐOẠN 2
         console.log('[GIAI ĐOẠN 2] Thực thi Universal Autoplay Script...');
         await page.evaluate(universalAutoplayScript);
         await new Promise(resolve => setTimeout(resolve, 5000));
         if (foundLinks.size > 0) return Array.from(foundLinks);
-        
         // GIAI ĐOẠN 3
         console.log('[GIAI ĐOẠN 3] Chuyển sang bắt Blob...');
         if (blobUrlFilterRules.length === 0) return Array.from(foundLinks);
-        
         const interceptedBlobUrls = new Set();
         await page.exposeFunction('reportBlobUrlToNode', (blobUrl) => {
             if (blobUrl && blobUrl.startsWith('blob:')) interceptedBlobUrls.add(blobUrl);
@@ -214,19 +202,15 @@ async function handleScrapeRequest(targetUrl, headers) {
                 return blobUrl;
             };
         });
-        
         await page.reload({ waitUntil: 'networkidle2', timeout: 60000 });
         await page.evaluate(universalAutoplayScript);
         await new Promise(resolve => setTimeout(resolve, 5000));
-
         const blobUrlsFromDOM = await page.$$eval('video, audio', els => els.map(el => el.src).filter(src => src && src.startsWith('blob:')));
         const allBlobUrlsToScan = new Set([...interceptedBlobUrls, ...blobUrlsFromDOM]);
-
         if (allBlobUrlsToScan.size > 0) {
             for (const blobUrl of allBlobUrlsToScan) {
                 const isUrlMatch = blobUrlFilterRules.some(rule => rule.test(blobUrl));
                 if (!isUrlMatch) continue;
-
                 const blobContent = await page.evaluate(async (bUrl) => {
                     try {
                         const response = await fetch(bUrl);
@@ -234,8 +218,6 @@ async function handleScrapeRequest(targetUrl, headers) {
                         return null;
                     } catch (e) { return null; }
                 }, blobUrl);
-                
-                // --- THAY ĐỔI: Tải nội dung lên dpaste.org ---
                 if (blobContent) {
                     console.log(`[DPASTE] Đang tải nội dung từ ${blobUrl} lên dpaste.org...`);
                     const rawLink = await uploadToDpaste(blobContent);
@@ -256,7 +238,6 @@ async function handleScrapeRequest(targetUrl, headers) {
     }
 }
 
-
 // --- API ENDPOINTS ---
 app.get('/api/scrape', apiKeyMiddleware, async (req, res) => {
     const { url, referer } = req.query;
@@ -265,6 +246,7 @@ app.get('/api/scrape', apiKeyMiddleware, async (req, res) => {
     const links = await handleScrapeRequest(url, headers);
     handleApiResponse(res, links, url);
 });
+
 app.post('/api/scrape', apiKeyMiddleware, async (req, res) => {
     const { url, headers = {} } = req.body;
     if (!url) return res.status(400).json({ success: false, message: 'Vui lòng cung cấp "url".' });
@@ -272,7 +254,6 @@ app.post('/api/scrape', apiKeyMiddleware, async (req, res) => {
     handleApiResponse(res, links, url);
 });
 
-// --- THAY ĐỔI: Quay lại hàm xử lý response đơn giản ---
 const handleApiResponse = (res, links, url) => {
     if (links.length > 0) {
         res.json({ success: true, count: links.length, source: url, links });
