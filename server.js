@@ -1,3 +1,4 @@
+// --- KHỞI TẠO VÀ IMPORT CÁC THƯ VIỆN ---
 require('dotenv').config();
 const express = require('express');
 const puppeteer = require('puppeteer-extra');
@@ -14,7 +15,7 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// --- CẤU HÌNH SERVER ---
+// --- CẤU HÌNH SERVER TỪ BIẾN MÔI TRƯỜNG ---
 const { API_KEY, P_IP, P_PORT, P_USER, P_PASSWORD, RULE_URL, RULE_UPDATE_INTERVAL } = process.env;
 let globalProxyUrl = null;
 if (P_IP && P_PORT) {
@@ -23,10 +24,213 @@ if (P_IP && P_PORT) {
 }
 if (!API_KEY) console.warn('[SECURITY WARNING] API_KEY chưa được thiết lập!');
 
-// --- Biến toàn cục cho trình duyệt và quản lý rule ---
+// --- BIẾN TOÀN CỤC CHO TRÌNH DUYỆT VÀ QUẢN LÝ RULE ---
 let browserInstance = null;
 let networkDetectionRules = [/application\/(vnd\.apple\.mpegurl|x-mpegurl)/i];
 let blobUrlFilterRules = [];
+
+// --- KỊCH BẢN BYPASS ANTI-DEVTOOL ---
+const antiAntiDebugScript = `!(() => {
+    console.log("Anti-anti-debug loaded! Happy debugging!")
+    const Proxy = window.Proxy;
+    const Object = window.Object;
+    const Array = window.Array;
+    /**
+     * Save original methods before we override them
+     */
+    const Originals = {
+        createElement: document.createElement,
+        log: console.log,
+        warn: console.warn,
+        table: console.table,
+        clear: console.clear,
+        functionConstructor: window.Function.prototype.constructor,
+        setInterval: window.setInterval,
+        createElement: document.createElement,
+        toString: Function.prototype.toString,
+        addEventListener: window.addEventListener
+    }
+
+    /**
+     * Cutoffs for logging. After cutoff is reached, will no longer log anti debug warnings.
+     */
+    const cutoffs = {
+        table: {
+            amount: 5,
+            within: 5000
+        },
+        clear: {
+            amount: 5,
+            within: 5000
+        },
+        redactedLog: {
+            amount: 5,
+            within: 5000
+        },
+        debugger: {
+            amount: 10,
+            within: 10000
+        },
+        debuggerThrow: {
+            amount: 10,
+            within: 10000
+        }
+    }
+
+    /**
+     * Decides if anti debug warnings should be logged
+     */
+    function shouldLog(type) {
+        const cutoff = cutoffs[type];
+        if (cutoff.tripped) return false;
+        cutoff.current = cutoff.current || 0;
+        const now = Date.now();
+        cutoff.last = cutoff.last || now;
+
+        if (now - cutoff.last > cutoff.within) {
+            cutoff.current = 0;
+        }
+
+        cutoff.last = now;
+        cutoff.current++;
+
+        if (cutoff.current > cutoff.amount) {
+            Originals.warn("Limit reached! Will now ignore " + type)
+            cutoff.tripped = true;
+            return false;
+        }
+
+        return true;
+    }
+
+    window.console.log = wrapFn((...args) => {
+        // Keep track of redacted arguments
+        let redactedCount = 0;
+
+        // Filter arguments for detectors
+        const newArgs = args.map((a) => {
+
+            // Don't print functions.
+            if (typeof a === 'function') {
+                redactedCount++;
+                return "Redacted Function";
+            }
+
+            // Passthrough if primitive
+            if (typeof a !== 'object' || a === null) return a;
+
+            // For objects, scan properties
+            var props = Object.getOwnPropertyDescriptors(a)
+            for (var name in props) {
+
+                // Redact custom getters
+                if (props[name].get !== undefined) {
+                    redactedCount++;
+                    return "Redacted Getter";
+                }
+
+                // Also block toString overrides
+                if (name === 'toString') {
+                    redactedCount++;
+                    return "Redacted Str";
+                }
+            }
+
+            // Defeat Performance Detector
+            // https://github.com/theajack/disable-devtool/blob/master/src/detector/sub-detector/performance.ts
+            if (Array.isArray(a) && a.length === 50 && typeof a[0] === "object") {
+                redactedCount++;
+                return "Redacted LargeObjArray";
+            }
+
+            return a;
+        });
+
+        // If most arguments are redacted, its probably spam
+        if (redactedCount >= Math.max(args.length - 1, 1)) {
+            if (!shouldLog("redactedLog")) {
+                return;
+            }
+        }
+
+        return Originals.log.apply(console, newArgs)
+    }, Originals.log);
+
+    window.console.table = wrapFn((obj) => {
+        if (shouldLog("table")) {
+            Originals.warn("Redacted table");
+        }
+    }, Originals.table);
+
+    window.console.clear = wrapFn(() => {
+        if (shouldLog("table")) {
+            Originals.warn("Prevented clear");
+        }
+    }, Originals.clear);
+
+    let debugCount = 0;
+    window.Function.prototype.constructor = wrapFn((...args) => {
+        const originalFn = Originals.functionConstructor.apply(this, args);
+        var fnContent = args[0];
+        if (fnContent) {
+            if (fnContent.includes('debugger')) { // An anti-debugger is attempting to stop debugging
+                if (shouldLog("debugger")) {
+                    Originals.warn("Prevented debugger");
+                }
+                debugCount++;
+                if (debugCount > 100) {
+                    if (shouldLog("debuggerThrow")) {
+                        Originals.warn("Debugger loop detected! Throwing error to stop execution");
+                    }
+                    throw new Error("You bad!");
+                } else {
+                    setTimeout(() => {
+                        debugCount--;
+                    }, 1);
+                }
+                const newArgs = args.slice(0);
+                newArgs[0] = args[0].replaceAll("debugger", ""); // remove debugger statements
+                return new Proxy(Originals.functionConstructor.apply(this, newArgs),{
+                    get: function (target, prop) {
+                        if (prop === "toString") {
+                            return originalFn.toString;
+                        }
+                        return target[prop];
+                    }
+                });
+            }
+        }
+        return originalFn;
+    }, Originals.functionConstructor);
+
+    document.createElement = wrapFn((el, o) => {
+        var string = el.toString();
+        var element = Originals.createElement.apply(document, [string, o]);
+        if (string.toLowerCase() === "iframe") {
+            element.addEventListener("load", () => {
+                try {
+                    element.contentWindow.window.console = window.console;
+                } catch (e) {
+
+                }
+            });
+        }
+        return element;
+    }, Originals.createElement);
+
+    function wrapFn(newFn, old) {
+        return new Proxy(newFn, {
+            get: function (target, prop) {
+                const callMethods = ['apply', 'bind', 'call'];
+                if (callMethods.includes(prop)) {
+                    return target[prop];
+                }
+                return old[prop];
+            }
+        });
+    }
+})()`;
+
 
 // --- CÁC HÀM HELPER VÀ LỖI ---
 const updateDetectionRules = async () => {
@@ -109,11 +313,11 @@ const universalAutoplayScript = `
             try {
                 const player = videojs.getPlayer(videoElement.id);
                 if (player && player.paused()) {
-                     player.play().catch(() => {
+                    player.play().catch(() => {
                         player.muted(true);
                         player.play();
-                     });
-                     return true;
+                    });
+                    return true;
                 }
             } catch(e) {}
             return false;
@@ -172,21 +376,30 @@ async function handleScrapeRequest(targetUrl, headers) {
     console.log(`[PAGE] Đang mở trang mới cho: ${targetUrl}`);
     try {
         page = await browserInstance.newPage();
+
+        // --- TÍCH HỢP ANTI-ANTI-DEBUG ---
+        // Tiêm kịch bản anti-anti-debug ngay khi tài liệu được tạo
+        // để vô hiệu hóa các cơ chế bảo vệ trước khi chúng kịp chạy.
+        await page.evaluateOnNewDocument(antiAntiDebugScript);
+        
         page.on('console', msg => console.log('PAGE LOG:', msg.text()));
         await page.setRequestInterception(true);
         page.on('request', r => ['image', 'stylesheet', 'font'].includes(r.resourceType()) ? r.abort() : r.continue());
         if (Object.keys(headers).length > 0) await page.setExtraHTTPHeaders(headers);
         page.on('response', r => handleResponse(r, foundLinks));
         page.on('framecreated', async f => f.on('response', r => handleResponse(r, foundLinks)));
+        
         // GIAI ĐOẠN 1
         console.log('[GIAI ĐOẠN 1] Đang lắng nghe link mạng...');
         await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         if (foundLinks.size > 0) return Array.from(foundLinks);
+        
         // GIAI ĐOẠN 2
         console.log('[GIAI ĐOẠN 2] Thực thi Universal Autoplay Script...');
         await page.evaluate(universalAutoplayScript);
         await new Promise(resolve => setTimeout(resolve, 5000));
         if (foundLinks.size > 0) return Array.from(foundLinks);
+        
         // GIAI ĐOẠN 3
         console.log('[GIAI ĐOẠN 3] Chuyển sang bắt Blob...');
         if (blobUrlFilterRules.length === 0) return Array.from(foundLinks);
@@ -263,10 +476,221 @@ const handleApiResponse = (res, links, url) => {
 };
 
 // --- DOCS & START SERVER ---
-const docsHtml = `<!DOCTYPE html><html lang="vi"><head><title>API Docs - M3U8 Scraper</title><style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;line-height:1.6;padding:20px;max-width:900px;margin:0 auto;color:#333}h1,h2,h3{color:#111;border-bottom:1px solid #ddd;padding-bottom:10px;margin-top:30px}code{background-color:#f4f4f4;padding:2px 6px;border-radius:4px;font-family:"Courier New",Courier,monospace;color:#c7254e}pre{background-color:#f6f8fa;padding:15px;border-radius:5px;white-space:pre-wrap;word-wrap:break-word;border:1px solid #ddd}a{color:#0366d6;text-decoration:none}a:hover{text-decoration:underline}.endpoint{border:1px solid #eee;padding:0 20px 15px;border-radius:8px;margin-bottom:20px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.05)}li{margin-bottom:10px}.badge{color:white;padding:3px 8px;border-radius:12px;font-size:.8em;font-weight:700;margin-right:8px}.badge-post{background-color:#28a745}.badge-get{background-color:#007bff}</style></head><body><h1>API Docs - M3U8 Scraper</h1><p>API cào dữ liệu link M3U8 với hệ thống proxy, rule động, xác thực và tự động xử lý blob URL.</p><h2>Xác Thực</h2><div class="endpoint"><p>Mọi yêu cầu đến <code>/api/scrape</code> đều phải được xác thực bằng cách thêm tham số <code>key=YOUR_API_KEY</code> vào query string.</p></div><h2>Cấu Hình Server (.env)</h2><div class="endpoint"><p><strong>Proxy:</strong> <code>P_IP</code>, <code>P_PORT</code>, etc. | <strong>Rule Động:</strong> <code>RULE_URL</code>, <code>RULE_UPDATE_INTERVAL</code></p></div><h2>Cách Viết Rule (trong file <code>rules.txt</code>)</h2><div class="endpoint"><h3>Rule Bắt Link Mạng</h3><p>Sử dụng tiền tố <code>regex:</code> để bắt các URL mạng.</p><pre><code># Bắt các link kết thúc bằng .m3u8 hoặc .m3u8?
-regex:\\.m3u8(\\?|$)</code></pre><h3>Rule Lọc URL Blob</h3><p>Sử dụng tiền tố <code>regex:blob:</code> để lọc chính URL của blob. Link blob sẽ được tải lên dpaste.org.</p><pre><code># Chỉ xử lý các blob được tạo từ domain 'kjl.bit'
-# Sẽ khớp với 'blob:https://kjl.bit/...'
-regex:blob:kjl\\.bit</code></pre></div><h2><span class="badge badge-get">GET</span> /api/scrape</h2><div class="endpoint"><h3>Ví dụ</h3><pre><code>curl "http://localhost:3000/api/scrape?url=...&key=..."</code></pre></div></body></html>`;
+const docsHtml = `<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>API Docs - M3U8 Scraper</title>
+    <style>
+        :root {
+            --bg-color: #f8f9fa;
+            --text-color: #212529;
+            --primary-color: #0d6efd;
+            --card-bg: #ffffff;
+            --card-border: #dee2e6;
+            --code-bg: #e9ecef;
+            --code-color: #d63384;
+            --badge-get-bg: #0d6efd;
+            --badge-post-bg: #198754;
+            --badge-text-color: #ffffff;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+        }
+        .container {
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        header {
+            text-align: center;
+            border-bottom: 1px solid var(--card-border);
+            padding-bottom: 2rem;
+            margin-bottom: 2rem;
+        }
+        h1 {
+            font-size: 2.5rem;
+            color: var(--text-color);
+        }
+        h2 {
+            font-size: 1.75rem;
+            border-bottom: 1px solid var(--card-border);
+            padding-bottom: 0.5rem;
+            margin-top: 2.5rem;
+            margin-bottom: 1.5rem;
+        }
+        .section {
+            background-color: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        code {
+            background-color: var(--code-bg);
+            color: var(--code-color);
+            padding: 0.2em 0.4em;
+            border-radius: 4px;
+            font-family: "SF Mono", "Fira Code", "Courier New", monospace;
+        }
+        pre {
+            background-color: #212529;
+            color: #f8f9fa;
+            padding: 1rem;
+            border-radius: 5px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            border: 1px solid var(--card-border);
+        }
+        .badge {
+            display: inline-block;
+            padding: 0.35em 0.65em;
+            font-size: 0.75em;
+            font-weight: 700;
+            line-height: 1;
+            color: var(--badge-text-color);
+            text-align: center;
+            white-space: nowrap;
+            vertical-align: baseline;
+            border-radius: 0.25rem;
+            margin-right: 0.5rem;
+        }
+        .badge-get { background-color: var(--badge-get-bg); }
+        .badge-post { background-color: var(--badge-post-bg); }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 1rem;
+        }
+        th, td {
+            text-align: left;
+            padding: 0.75rem;
+            border-bottom: 1px solid var(--card-border);
+        }
+        th { background-color: var(--bg-color); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>M3U8 Scraper API</h1>
+            <p>API cào dữ liệu link M3U8 mạnh mẽ với trình duyệt ảo, rule động và cơ chế bypass nâng cao.</p>
+        </header>
+
+        <main>
+            <h2>Giới Thiệu</h2>
+            <div class="section">
+                <p>API này sử dụng một trình duyệt ảo (Headless Browser) để truy cập vào một <code>url</code> bất kỳ, sau đó thực thi một loạt các hành động thông minh để tìm và trích xuất các liên kết video streaming (M3U8). Nó được thiết kế để vượt qua các rào cản thông thường và cả các kỹ thuật ẩn link phức tạp.</p>
+            </div>
+
+            <h2>Xác Thực</h2>
+            <div class="section">
+                <p>Tất cả các yêu cầu đến API đều phải được xác thực. Bạn cần cung cấp <code>API_KEY</code> đã được cấu hình trên server dưới dạng một tham số truy vấn (query parameter).</p>
+                <p>Thêm <code>?key=YOUR_API_KEY</code> vào cuối URL của yêu cầu.</p>
+                <pre><code>curl "http://localhost:3000/api/scrape?..." # SẼ BỊ TỪ CHỐI
+curl "http://localhost:3000/api/scrape?url=...&key=your_super_secret_key" # HỢP LỆ</code></pre>
+            </div>
+            
+            <h2>Endpoints</h2>
+
+            <div class="section">
+                <h3><span class="badge badge-get">GET</span> /api/scrape</h3>
+                <p>Cào dữ liệu từ một URL bằng phương thức GET. Các tham số được truyền qua query string.</p>
+                
+                <h4>Parameters</h4>
+                <table>
+                    <thead>
+                        <tr><th>Tên tham số</th><th>Kiểu</th><th>Mô tả</th><th>Bắt buộc</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>url</code></td><td>string</td><td>URL của trang web bạn muốn cào.</td><td>Có</td></tr>
+                        <tr><td><code>key</code></td><td>string</td><td>API Key để xác thực.</td><td>Có</td></tr>
+                        <tr><td><code>referer</code></td><td>string</td><td>(Tùy chọn) Giả mạo header Referer để vượt qua một số cơ chế bảo vệ.</td><td>Không</td></tr>
+                    </tbody>
+                </table>
+
+                <h4>Ví dụ sử dụng (cURL)</h4>
+                <pre><code>curl -X GET "http://localhost:3000/api/scrape?url=https://example.com/video-page&key=YOUR_API_KEY"</code></pre>
+            </div>
+
+            <div class="section">
+                <h3><span class="badge badge-post">POST</span> /api/scrape</h3>
+                <p>Cào dữ liệu từ một URL bằng phương thức POST. Các tham số được truyền trong body của yêu cầu dưới dạng JSON. Phương thức này hữu ích khi bạn cần truyền các header phức tạp.</p>
+
+                <h4>Request Body (JSON)</h4>
+                 <table>
+                    <thead>
+                        <tr><th>Tên thuộc tính</th><th>Kiểu</th><th>Mô tả</th><th>Bắt buộc</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td><code>url</code></td><td>string</td><td>URL của trang web bạn muốn cào.</td><td>Có</td></tr>
+                        <tr><td><code>headers</code></td><td>object</td><td>(Tùy chọn) Một đối tượng chứa các HTTP header tùy chỉnh để gửi kèm yêu cầu (ví dụ: <code>{"Referer": "https://google.com", "User-Agent": "MyBot"}</code>).</td><td>Không</td></tr>
+                    </tbody>
+                </table>
+
+                <h4>Ví dụ sử dụng (cURL)</h4>
+                <pre><code>curl -X POST "http://localhost:3000/api/scrape?key=YOUR_API_KEY" \
+-H "Content-Type: application/json" \
+-d '{
+  "url": "https://example.com/video-page",
+  "headers": {
+    "Referer": "https://some-other-site.com"
+  }
+}'</code></pre>
+            </div>
+
+            <h2>Phản Hồi (Responses)</h2>
+            <div class="section">
+                <h4>Phản hồi thành công (Success)</h4>
+                <pre><code>{
+  "success": true,
+  "count": 1,
+  "source": "https://example.com/video-page",
+  "links": [
+    "https://cdn.example.com/path/to/video.m3u8"
+  ]
+}</code></pre>
+                <h4>Phản hồi thất bại (Failure)</h4>
+                <pre><code>{
+  "success": false,
+  "message": "Không tìm thấy link M3U8 nào.",
+  "source": "https://example.com/video-page",
+  "links": []
+}</code></pre>
+            </div>
+            
+            <h2>Tính Năng Nâng Cao</h2>
+            <div class="section">
+                <h3>Rule Động</h3>
+                <p>Hệ thống có thể tải các quy tắc nhận dạng (regex) từ một file text (được cấu hình bởi <code>RULE_URL</code>). Điều này cho phép cập nhật logic phát hiện mà không cần khởi động lại server.</p>
+                <pre><code># File rules.txt
+# Bắt các link mạng kết thúc bằng .m3u8
+regex:\\.m3u8(\\?|$)
+
+# Chỉ xử lý các blob được tạo từ domain 'example.com'
+regex:blob:example\\.com</code></pre>
+
+                <h3>Bypass Anti-DevTool</h3>
+                <p>API tự động tiêm một kịch bản vào trang web đích để vô hiệu hóa các kỹ thuật phổ biến mà trang web dùng để phát hiện và ngăn chặn các công cụ tự động. Kịch bản này sẽ:</p>
+                <ul>
+                    <li>Ghi đè các hàm <code>console</code> để tránh bị phát hiện.</li>
+                    <li>Vô hiệu hóa các vòng lặp <code>debugger;</code>.</li>
+                    <li>Ngăn chặn các cơ chế phát hiện dựa trên <code>toString()</code> của hàm.</li>
+                </ul>
+                <p>Tính năng này giúp tăng đáng kể tỉ lệ thành công trên các trang web có cơ chế bảo vệ cao.</p>
+            </div>
+        </main>
+    </div>
+</body>
+</html>`;
+
 
 const startServer = async () => {
     await initializeBrowser();
@@ -287,7 +711,7 @@ const initializeBrowser = async () => {
         browserInstance = await puppeteer.launch({
             headless: "new",
             args: launchArgs,
-            executablePath: '/usr/bin/chromium',
+            executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium', // Cho phép tùy chỉnh đường dẫn
             userDataDir: '/usr/src/app/.browser-cache'
         });
         console.log('[BROWSER] Trình duyệt đã sẵn sàng!');
