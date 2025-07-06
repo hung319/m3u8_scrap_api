@@ -3,7 +3,7 @@
 # --- GIAI ĐOẠN 1: BUILDER ---
 # Giai đoạn này chỉ dùng để cài đặt node_modules một cách an toàn và hiệu quả
 # Sử dụng --platform=$BUILDPLATFORM để đảm bảo npm install luôn chạy native trên máy build
-FROM --platform=$BUILDPLATFORM node:20-bookworm-slim AS builder
+FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS builder
 
 LABEL author="hung319"
 
@@ -18,7 +18,7 @@ RUN npm install --production --omit=dev
 
 # --- GIAI ĐOẠN 2: PRODUCTION ---
 # Bắt đầu từ một image Node.js sạch, đảm bảo không có file rác từ môi trường build
-FROM node:20-bookworm-slim
+FROM node:22-bookworm-slim
 
 # Cài đặt các thư viện hệ thống cần thiết và trình duyệt Chromium
 # Gộp tất cả vào một lệnh RUN duy nhất để tạo một layer duy nhất, giảm kích thước image
