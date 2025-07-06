@@ -281,7 +281,7 @@ const startServer = async () => {
 
 const initializeBrowser = async () => {
     console.log('[BROWSER] Đang khởi tạo instance trình duyệt toàn cục...');
-    const launchArgs = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote', '--single-process', '--disable-gpu'];
+    const launchArgs = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-accelerated-2d-canvas', '--no-first-run', '--no-zygote', '--single-process', '--disable-gpu', '--disable-web-security'];
     if (globalProxyUrl) launchArgs.push(`--proxy-server=${globalProxyUrl}`);
     try {
         browserInstance = await puppeteer.launch({
