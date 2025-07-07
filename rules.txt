@@ -2,4 +2,4 @@ regex:https?:\/\/master-lengs\.org\/api\/v3\/hh\/.*?\/master\.m3u8\?.*
 regex:blob:https?://play\.plhqtvhay\.xyz/.*
 regex:.*guardstorage\.net/.*/master.m3u8.*
 regex:.*smoothpre\.com.*master.m3u8
-regex:.*xporn\.tv/.*.mp4/.*
+regex:.*xporn.*/.*mp4
