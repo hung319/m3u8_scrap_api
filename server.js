@@ -28,7 +28,7 @@ if (!API_KEY) console.warn('[SECURITY WARNING] API_KEY chưa được thiết l�
 let browserInstance = null;
 let networkDetectionRules = [/application\/(vnd\.apple\.mpegurl|x-mpegurl)/i];
 let blobUrlFilterRules = [];
-
+const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 // --- KỊCH BẢN BYPASS ANTI-DEVTOOL ---
 const antiAntiDebugScript = `!(() => {
     console.log("Anti-anti-debug loaded! Happy debugging!")
@@ -376,6 +376,7 @@ async function handleScrapeRequest(targetUrl, headers) {
     console.log(`[PAGE] Đang mở trang mới cho: ${targetUrl}`);
     try {
         page = await browserInstance.newPage();
+        await page.setUserAgent(DEFAULT_USER_AGENT);
 
         // --- TÍCH HỢP ANTI-ANTI-DEBUG ---
         // Tiêm kịch bản anti-anti-debug ngay khi tài liệu được tạo
