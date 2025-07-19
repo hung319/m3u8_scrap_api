@@ -29,6 +29,7 @@ let browserInstance = null;
 let networkDetectionRules = [/application\/(vnd\.apple\.mpegurl|x-mpegurl)/i];
 let blobUrlFilterRules = [];
 const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+
 // --- KỊCH BẢN BYPASS ANTI-DEVTOOL ---
 const antiAntiDebugScript = `!(() => {
     console.log("Anti-anti-debug loaded! Happy debugging!")
@@ -235,7 +236,7 @@ const antiAntiDebugScript = `!(() => {
 // --- CÁC HÀM HELPER VÀ LỖI ---
 const updateDetectionRules = async () => {
     networkDetectionRules = [/application\/(vnd\.apple\.mpegurl|x-mpegurl)/i];
-    blockedUrlFilterRules = []; // New array to store blocked URL rules
+    blobUrlFilterRules = []; // New array to store blocked URL rules
     if (!RULE_URL) return console.log('[RULE MANAGER] Không có RULE_URL. Chỉ dùng rule content-type mặc định.');
     console.log(`[RULE MANAGER] Đang cập nhật rule từ: ${RULE_URL}`);
     try {
@@ -250,7 +251,7 @@ const updateDetectionRules = async () => {
         });
         blockedRulesRaw.forEach(r => {
             const ruleStr = r.substring(3).trim();
-            try { blockedUrlFilterRules.push(new RegExp(ruleStr, 'i')); }
+            try { blobUrlFilterRules.push(new RegExp(ruleStr, 'i')); }
             catch (e) { console.error(`[RULE MANAGER] Lỗi cú pháp rule chặn: "${r}". Bỏ qua.`); }
         });
         console.log(`[RULE MANAGER] Cập nhật thành công! ${networkDetectionRules.length} rule mạng, ${blockedUrlFilterRules.length} rule chặn.`);
@@ -263,7 +264,7 @@ const handleResponse = (response, foundLinks) => {
     const requestUrl = response.url();
     if (requestUrl.startsWith('data:')) return;
     const contentType = response.headers()['content-type'] || '';
-    const isBlockedByRule = blockedUrlFilterRules.some(rule => rule.test(requestUrl));
+    const isBlockedByRule = blobUrlFilterRules.some(rule => rule.test(requestUrl));
     const isMatchByRule = networkDetectionRules.some(rule => rule.test(requestUrl) || rule.test(contentType));
     if (isBlockedByRule) {
         console.log(`[-] Đã chặn link: ${requestUrl}`);
@@ -281,7 +282,7 @@ async function uploadToDpaste(content) {
         const form = new FormData();
         form.append('data', content);
         form.append('exp', '12h'); // 12-hour expiration
-        const { data } = await axios.post('https://text.h4rs.dpdns.org/', form, { headers: { ...form.getHeaders() } });
+        const { data } = await axios.post('https://text.h4rs.dpdns.org/x.m3u8', form, { headers: { ...form.getHeaders() } });
         return `${data.trim()}`; // Assuming the response is just the raw URL
     } catch (error) {
         console.error('[TEXT UPLOAD] Lỗi khi tải lên:', error.message);
@@ -294,7 +295,6 @@ const apiKeyMiddleware = (req, res, next) => {
     if (req.query.key === API_KEY) return next();
     res.status(401).json({ success: false, message: 'Unauthorized: API Key không hợp lệ hoặc bị thiếu.' });
 };
-
 
 const universalAutoplayScript = `
     async function universalAutoplay() {
@@ -376,18 +376,18 @@ const universalAutoplayScript = `
 `;
 
 // --- LOGIC SCRAPE CHÍNH ---
+// <<< THAY ĐỔI: Toàn bộ hàm handleScrapeRequest đã được cấu trúc lại
 async function handleScrapeRequest(targetUrl, headers) {
     if (!browserInstance) throw new Error("Trình duyệt chưa sẵn sàng.");
     let page = null;
     const foundLinks = new Set();
     console.log(`[PAGE] Đang mở trang mới cho: ${targetUrl}`);
+
     try {
         page = await browserInstance.newPage();
         await page.setUserAgent(DEFAULT_USER_AGENT);
-
-        // --- TÍCH HỢP ANTI-ANTI-DEBUG ---
+        
         // Tiêm kịch bản anti-anti-debug ngay khi tài liệu được tạo
-        // để vô hiệu hóa các cơ chế bảo vệ trước khi chúng kịp chạy.
         await page.evaluateOnNewDocument(antiAntiDebugScript);
         
         page.on('console', msg => console.log('PAGE LOG:', msg.text()));
@@ -396,22 +396,30 @@ async function handleScrapeRequest(targetUrl, headers) {
         if (Object.keys(headers).length > 0) await page.setExtraHTTPHeaders(headers);
         page.on('response', r => handleResponse(r, foundLinks));
         page.on('framecreated', async f => f.on('response', r => handleResponse(r, foundLinks)));
-        
-        // GIAI ĐOẠN 1
-        console.log('[GIAI ĐOẠN 1] Đang lắng nghe link mạng...');
+
+        // --- GIAI ĐOẠN 1: TẢI TRANG, AUTOPLAY & LẮNG NGHE LINK MẠNG ---
+        console.log('[GIAI ĐOẠN 1] Đang tải trang và thực thi Autoplay...');
         await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-        if (foundLinks.size > 0) return Array.from(foundLinks);
         
-        // GIAI ĐOẠN 2
-        console.log('[GIAI ĐOẠN 2] Thực thi Universal Autoplay Script...');
         await page.evaluate(universalAutoplayScript);
-        await new Promise(resolve => setTimeout(resolve, 5000));
-        if (foundLinks.size > 0) return Array.from(foundLinks);
+        await new Promise(resolve => setTimeout(resolve, 5000)); // Chờ 5 giây để autoplay kích hoạt request
         
-        // GIAI ĐOẠN 3
-        console.log('[GIAI ĐOẠN 3] Chuyển sang bắt Blob...');
-        if (blobUrlFilterRules.length === 0) return Array.from(foundLinks);
+        if (foundLinks.size > 0) {
+            console.log(`[GIAI ĐOẠN 1] Thành công! Tìm thấy ${foundLinks.size} link mạng.`);
+            return Array.from(foundLinks);
+        }
+        
+        console.log('[GIAI ĐOẠN 1] Không tìm thấy link mạng trực tiếp. Chuyển sang Giai đoạn 2.');
+
+        // --- GIAI ĐOẠN 2: THỬ LẠI VỚI BLOB (TẢI LẠI & AUTOPLAY) ---
+        console.log('[GIAI ĐOẠN 2] Chuyển sang bắt Blob URL...');
+        if (blobUrlFilterRules.length === 0) {
+            console.log('[GIAI ĐOẠN 2] Không có rule cho Blob. Kết thúc.');
+            return Array.from(foundLinks);
+        }
+
         const interceptedBlobUrls = new Set();
+        // Cài đặt hook để bắt các URL blob được tạo ra
         await page.exposeFunction('reportBlobUrlToNode', (blobUrl) => {
             if (blobUrl && blobUrl.startsWith('blob:')) interceptedBlobUrls.add(blobUrl);
         });
@@ -423,15 +431,23 @@ async function handleScrapeRequest(targetUrl, headers) {
                 return blobUrl;
             };
         });
+
+        console.log('[GIAI ĐOẠN 2] Tải lại trang (F5) để kích hoạt hook bắt Blob...');
         await page.reload({ waitUntil: 'networkidle2', timeout: 60000 });
+        
+        console.log('[GIAI ĐOẠN 2] Thực thi lại Autoplay sau khi tải lại trang...');
         await page.evaluate(universalAutoplayScript);
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        await new Promise(resolve => setTimeout(resolve, 5000)); // Chờ
+        
         const blobUrlsFromDOM = await page.$$eval('video, audio', els => els.map(el => el.src).filter(src => src && src.startsWith('blob:')));
         const allBlobUrlsToScan = new Set([...interceptedBlobUrls, ...blobUrlsFromDOM]);
+
         if (allBlobUrlsToScan.size > 0) {
+            console.log(`[GIAI ĐOẠN 2] Tìm thấy ${allBlobUrlsToScan.size} Blob URL. Đang xử lý...`);
             for (const blobUrl of allBlobUrlsToScan) {
                 const isUrlMatch = blobUrlFilterRules.some(rule => rule.test(blobUrl));
                 if (!isUrlMatch) continue;
+
                 const blobContent = await page.evaluate(async (bUrl) => {
                     try {
                         const response = await fetch(bUrl);
@@ -439,8 +455,9 @@ async function handleScrapeRequest(targetUrl, headers) {
                         return null;
                     } catch (e) { return null; }
                 }, blobUrl);
+
                 if (blobContent) {
-                    console.log(`[DPASTE] Đang tải nội dung từ ${blobUrl} lên dpaste.org...`);
+                    console.log(`[DPASTE] Đang tải nội dung từ ${blobUrl} lên dpaste...`);
                     const rawLink = await uploadToDpaste(blobContent);
                     if (rawLink) {
                         console.log(`[DPASTE] Tải lên thành công: ${rawLink}`);
@@ -449,7 +466,9 @@ async function handleScrapeRequest(targetUrl, headers) {
                 }
             }
         }
+        
         return Array.from(foundLinks);
+
     } catch (error) {
         console.error(`[PAGE] Lỗi nghiêm trọng khi xử lý trang ${targetUrl}:`, error.message);
         return [];
@@ -458,6 +477,7 @@ async function handleScrapeRequest(targetUrl, headers) {
         console.log(`[PAGE] Đã đóng trang cho: ${targetUrl}`);
     }
 }
+
 
 // --- API ENDPOINTS ---
 app.get('/api/scrape', apiKeyMiddleware, async (req, res) => {
@@ -701,7 +721,7 @@ bl:blob:^https?:\\/\\/(example\\.com|example\\.co\\.uk)\\/blocked.*
                 <p>Gửi một request POST đến URL với tên file bạn mong muốn.</p>
                 <ul>
                     <li><strong>Method:</strong> POST</li>
-                    <li><strong>URL:</strong>    /ten-file-cua-ban.txt</li>
+                    <li><strong>URL:</strong>   /ten-file-cua-ban.txt</li>
                     <li><strong>Body:</strong>   JSON</li>
                 </ul>
                 <p><strong>CÁC THAM SỐ TRONG BODY:</strong></p>
@@ -709,7 +729,7 @@ bl:blob:^https?:\\/\\/(example\\.com|example\\.co\\.uk)\\/blocked.*
                     <li><code>data</code> (bắt buộc): Nội dung text thô bạn muốn lưu trữ.</li>
                     <li><code>exp</code> (tùy chọn): Thời gian hết hạn. Nếu bỏ qua, file sẽ được lưu vĩnh viễn.
                         <ul>
-                            <li>Định dạng: <s> (giây), <m> (phút), <h> (giờ), <d> (ngày), <mo> (tháng), <y> (năm).</li>
+                            <li>Định dạng: &lt;s&gt; (giây), &lt;m&gt; (phút), &lt;h&gt; (giờ), &lt;d&gt; (ngày), &lt;mo&gt; (tháng), &lt;y&gt; (năm).</li>
                             <li>Ví dụ: "60s", "30m", "12h", "7d", "1mo", "2y".</li>
                         </ul>
                     </li>
@@ -731,7 +751,7 @@ curl -X POST http://localhost:10000/vinhvien.txt \\
                 <p>Thực hiện một request GET đến URL được trả về từ API upload.</p>
                 <ul>
                     <li><strong>Method:</strong> GET</li>
-                    <li><strong>URL:</strong>    /<chuoi-ngau-nhien>/ten-file-cua-ban.txt</li>
+                    <li><strong>URL:</strong>   /&lt;chuoi-ngau-nhien&gt;/ten-file-cua-ban.txt</li>
                 </ul>
                 <p>và bỏ qua phần check file coi có phải m3u8 hay ko</p>
             </div>
