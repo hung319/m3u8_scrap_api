@@ -1,2 +1,3 @@
 regex:https?:\/\/master-lengs\.org\/api\/v3\/hh\/.*?\/master\.m3u8\?.*
 regex:blob:https?://play\.plhqtvhay\.xyz/.*
+regex:^https?:\/\/embed.+\.streamc\.xyz/.+
