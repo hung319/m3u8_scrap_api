@@ -1,6 +1,1 @@
 al:https?:\/\/master-lengs\.org\/api\/v3\/hh\/.*?\/master\.m3u8\?.*
-al:blob:https?://play\.plhqtvhay\.xyz/.*
-al:https?:\/\/embed.+\.streamc\.xyz/.+
-bl:.+/embed\.php.*$
-bl:.+/player\.js.*$
-bl:.+/devtools\.js.*$
