@@ -241,17 +241,15 @@ const updateDetectionRules = async () => {
     try {
         const { data } = await axios.get(RULE_URL);
         const allRules = data.split('\n').map(l => l.trim().toLowerCase()).filter(Boolean);
-        const networkRulesRaw = allRules.filter(r => r.startsWith('regex:') && !r.startsWith('regex:blob:'));
-        const blobRulesRaw = allRules.filter(r => r.startsWith('regex:blob:'));
+        const networkRulesRaw = allRules.filter(r => r.startsWith('al:'));
+        const blobRulesRaw = allRules.filter(r => r.startsWith('bl:'));
         networkRulesRaw.forEach(r => {
-            try { networkDetectionRules.push(new RegExp(r.substring(6).trim(), 'i')); }
+            const ruleStr = r.substring(3).trim();
+            try { networkDetectionRules.push(new RegExp(ruleStr, 'i')); }
             catch (e) { console.error(`[RULE MANAGER] Lỗi cú pháp rule mạng: "${r}". Bỏ qua.`); }
         });
-        blobRulesRaw.forEach(r => {
-            try { blobUrlFilterRules.push(new RegExp(r.substring(11).trim(), 'i')); }
-            catch (e) { console.error(`[RULE MANAGER] Lỗi cú pháp rule lọc blob: "${r}". Bỏ qua.`); }
-        });
-        console.log(`[RULE MANAGER] Cập nhật thành công! ${networkDetectionRules.length} rule mạng, ${blobUrlFilterRules.length} rule lọc URL blob.`);
+        console.log(`[RULE MANAGER] Cập nhật thành công! ${networkDetectionRules.length} rule mạng.`);
+        // We no longer use blobUrlFilterRules, so we can ignore the blobRulesRaw processing.
     } catch (error) {
         console.error(`[RULE MANAGER] Lỗi khi tải file rule: ${error.message}`);
     }
