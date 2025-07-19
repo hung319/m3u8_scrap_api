@@ -236,7 +236,7 @@ const antiAntiDebugScript = `!(() => {
 // --- CÁC HÀM HELPER VÀ LỖI ---
 const updateDetectionRules = async () => {
     networkDetectionRules = [/application\/(vnd\.apple\.mpegurl|x-mpegurl)/i];
-    blockUrlFilterRules = []; // New array to store blocked URL rules
+    blockedUrlFilterRules = []; // New array to store blocked URL rules
     if (!RULE_URL) return console.log('[RULE MANAGER] Không có RULE_URL. Chỉ dùng rule content-type mặc định.');
     console.log(`[RULE MANAGER] Đang cập nhật rule từ: ${RULE_URL}`);
     try {
