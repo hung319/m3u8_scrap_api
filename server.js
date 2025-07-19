@@ -295,16 +295,6 @@ const apiKeyMiddleware = (req, res, next) => {
     res.status(401).json({ success: false, message: 'Unauthorized: API Key không hợp lệ hoặc bị thiếu.' });
 };
 
-const handleResponse = (response, foundLinks) => {
-    const requestUrl = response.url();
-    if (requestUrl.startsWith('data:')) return;
-    const contentType = response.headers()['content-type'] || '';
-    const isMatchByRule = networkDetectionRules.some(rule => rule.test(requestUrl) || rule.test(contentType));
-    if (isMatchByRule && !requestUrl.endsWith('.ts')) {
-        console.log(`[+] Đã bắt được link M3U8 (khớp với Rule): ${requestUrl}`);
-        foundLinks.add(requestUrl);
-    }
-};
 
 const universalAutoplayScript = `
     async function universalAutoplay() {
