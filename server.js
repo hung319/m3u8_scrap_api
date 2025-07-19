@@ -235,23 +235,43 @@ const antiAntiDebugScript = `!(() => {
 // --- CÁC HÀM HELPER VÀ LỖI ---
 const updateDetectionRules = async () => {
     networkDetectionRules = [/application\/(vnd\.apple\.mpegurl|x-mpegurl)/i];
-    blobUrlFilterRules = [];
+    blockedUrlFilterRules = []; // New array to store blocked URL rules
     if (!RULE_URL) return console.log('[RULE MANAGER] Không có RULE_URL. Chỉ dùng rule content-type mặc định.');
     console.log(`[RULE MANAGER] Đang cập nhật rule từ: ${RULE_URL}`);
     try {
         const { data } = await axios.get(RULE_URL);
         const allRules = data.split('\n').map(l => l.trim().toLowerCase()).filter(Boolean);
         const networkRulesRaw = allRules.filter(r => r.startsWith('al:'));
-        const blobRulesRaw = allRules.filter(r => r.startsWith('bl:'));
+        const blockedRulesRaw = allRules.filter(r => r.startsWith('bl:'));
         networkRulesRaw.forEach(r => {
             const ruleStr = r.substring(3).trim();
             try { networkDetectionRules.push(new RegExp(ruleStr, 'i')); }
-            catch (e) { console.error(`[RULE MANAGER] Lỗi cú pháp rule mạng: "${r}". Bỏ qua.`); }
+            catch (e) { console.error(`[RULE MANAGER] Lỗi cú Pháp rule mạng: "${r}". Bỏ qua.`); }
         });
-        console.log(`[RULE MANAGER] Cập nhật thành công! ${networkDetectionRules.length} rule mạng.`);
-        // We no longer use blobUrlFilterRules, so we can ignore the blobRulesRaw processing.
+        blockedRulesRaw.forEach(r => {
+            const ruleStr = r.substring(3).trim();
+            try { blockedUrlFilterRules.push(new RegExp(ruleStr, 'i')); }
+            catch (e) { console.error(`[RULE MANAGER] Lỗi cú pháp rule chặn: "${r}". Bỏ qua.`); }
+        });
+        console.log(`[RULE MANAGER] Cập nhật thành công! ${networkDetectionRules.length} rule mạng, ${blockedUrlFilterRules.length} rule chặn.`);
     } catch (error) {
         console.error(`[RULE MANAGER] Lỗi khi tải file rule: ${error.message}`);
+    }
+};
+
+const handleResponse = (response, foundLinks) => {
+    const requestUrl = response.url();
+    if (requestUrl.startsWith('data:')) return;
+    const contentType = response.headers()['content-type'] || '';
+    const isBlockedByRule = blockedUrlFilterRules.some(rule => rule.test(requestUrl));
+    const isMatchByRule = networkDetectionRules.some(rule => rule.test(requestUrl) || rule.test(contentType));
+    if (isBlockedByRule) {
+        console.log(`[-] Đã chặn link: ${requestUrl}`);
+        return;
+    }
+    if (isMatchByRule && !requestUrl.endsWith('.ts')) {
+        console.log(`[+] Đã bắt được link M3U8 (khớp với Rule): ${requestUrl}`);
+        foundLinks.add(requestUrl);
     }
 };
 
@@ -259,13 +279,12 @@ const updateDetectionRules = async () => {
 async function uploadToDpaste(content) {
     try {
         const form = new FormData();
-        form.append('content', content);
-        form.append('syntax', 'text');
-        form.append('expiry_days', '1');
-        const { data } = await axios.post('https://dpaste.org/api/', form, { headers: { ...form.getHeaders() } });
-        return `${data.trim()}/raw`;
+        form.append('data', content);
+        form.append('exp', '12h'); // 12-hour expiration
+        const { data } = await axios.post('https://text.h4rs.dpdns.org/', form, { headers: { ...form.getHeaders() } });
+        return `${data.trim()}`; // Assuming the response is just the raw URL
     } catch (error) {
-        console.error('[DPASTE] Lỗi khi tải lên:', error.message);
+        console.error('[TEXT UPLOAD] Lỗi khi tải lên:', error.message);
         return null;
     }
 }
@@ -524,6 +543,11 @@ const docsHtml = `<!DOCTYPE html>
             margin-top: 2.5rem;
             margin-bottom: 1.5rem;
         }
+        h3 {
+            font-size: 1.5rem;
+            margin-top: 2rem;
+            margin-bottom: 1rem;
+        }
         .section {
             background-color: var(--card-bg);
             border: 1px solid var(--card-border);
@@ -582,13 +606,11 @@ const docsHtml = `<!DOCTYPE html>
             <h1>M3U8 Scraper API</h1>
             <p>API cào dữ liệu link M3U8 mạnh mẽ với trình duyệt ảo, rule động và cơ chế bypass nâng cao.</p>
         </header>
-
         <main>
             <h2>Giới Thiệu</h2>
             <div class="section">
                 <p>API này sử dụng một trình duyệt ảo (Headless Browser) để truy cập vào một <code>url</code> bất kỳ, sau đó thực thi một loạt các hành động thông minh để tìm và trích xuất các liên kết video streaming (M3U8). Nó được thiết kế để vượt qua các rào cản thông thường và cả các kỹ thuật ẩn link phức tạp.</p>
             </div>
-
             <h2>Xác Thực</h2>
             <div class="section">
                 <p>Tất cả các yêu cầu đến API đều phải được xác thực. Bạn cần cung cấp <code>API_KEY</code> đã được cấu hình trên server dưới dạng một tham số truy vấn (query parameter).</p>
@@ -596,13 +618,10 @@ const docsHtml = `<!DOCTYPE html>
                 <pre><code>curl "http://localhost:3000/api/scrape?..." # SẼ BỊ TỪ CHỐI
 curl "http://localhost:3000/api/scrape?url=...&key=your_super_secret_key" # HỢP LỆ</code></pre>
             </div>
-            
             <h2>Endpoints</h2>
-
             <div class="section">
                 <h3><span class="badge badge-get">GET</span> /api/scrape</h3>
                 <p>Cào dữ liệu từ một URL bằng phương thức GET. Các tham số được truyền qua query string.</p>
-                
                 <h4>Parameters</h4>
                 <table>
                     <thead>
@@ -614,17 +633,14 @@ curl "http://localhost:3000/api/scrape?url=...&key=your_super_secret_key" # HỢ
                         <tr><td><code>referer</code></td><td>string</td><td>(Tùy chọn) Giả mạo header Referer để vượt qua một số cơ chế bảo vệ.</td><td>Không</td></tr>
                     </tbody>
                 </table>
-
                 <h4>Ví dụ sử dụng (cURL)</h4>
                 <pre><code>curl -X GET "http://localhost:3000/api/scrape?url=https://example.com/video-page&key=YOUR_API_KEY"</code></pre>
             </div>
-
             <div class="section">
                 <h3><span class="badge badge-post">POST</span> /api/scrape</h3>
                 <p>Cào dữ liệu từ một URL bằng phương thức POST. Các tham số được truyền trong body của yêu cầu dưới dạng JSON. Phương thức này hữu ích khi bạn cần truyền các header phức tạp.</p>
-
                 <h4>Request Body (JSON)</h4>
-                 <table>
+                <table>
                     <thead>
                         <tr><th>Tên thuộc tính</th><th>Kiểu</th><th>Mô tả</th><th>Bắt buộc</th></tr>
                     </thead>
@@ -633,10 +649,9 @@ curl "http://localhost:3000/api/scrape?url=...&key=your_super_secret_key" # HỢ
                         <tr><td><code>headers</code></td><td>object</td><td>(Tùy chọn) Một đối tượng chứa các HTTP header tùy chỉnh để gửi kèm yêu cầu (ví dụ: <code>{"Referer": "https://google.com", "User-Agent": "MyBot"}</code>).</td><td>Không</td></tr>
                     </tbody>
                 </table>
-
                 <h4>Ví dụ sử dụng (cURL)</h4>
-                <pre><code>curl -X POST "http://localhost:3000/api/scrape?key=YOUR_API_KEY" \
--H "Content-Type: application/json" \
+                <pre><code>curl -X POST "http://localhost:3000/api/scrape?key=YOUR_API_KEY" \\
+-H "Content-Type: application/json" \\
 -d '{
   "url": "https://example.com/video-page",
   "headers": {
@@ -644,7 +659,6 @@ curl "http://localhost:3000/api/scrape?url=...&key=your_super_secret_key" # HỢ
   }
 }'</code></pre>
             </div>
-
             <h2>Phản Hồi (Responses)</h2>
             <div class="section">
                 <h4>Phản hồi thành công (Success)</h4>
@@ -664,18 +678,22 @@ curl "http://localhost:3000/api/scrape?url=...&key=your_super_secret_key" # HỢ
   "links": []
 }</code></pre>
             </div>
-            
             <h2>Tính Năng Nâng Cao</h2>
             <div class="section">
                 <h3>Rule Động</h3>
                 <p>Hệ thống có thể tải các quy tắc nhận dạng (regex) từ một file text (được cấu hình bởi <code>RULE_URL</code>). Điều này cho phép cập nhật logic phát hiện mà không cần khởi động lại server.</p>
                 <pre><code># File rules.txt
 # Bắt các link mạng kết thúc bằng .m3u8
-regex:\\.m3u8(\\?|$)
+al:^https?:\\/\\/(example\\.com|example\\.co\\.uk)\\/.*\\.m3u8$
+# Block các link mạng từ domain example.com
+bl:^https?:\\/\\/(example\\.com|example\\.co\\.uk)\\/blocked.*$
 
-# Chỉ xử lý các blob được tạo từ domain 'example.com'
-regex:blob:example\\.com</code></pre>
+# Bắt các blob từ domain example.com
+al:blob:^https?:\\/\\/(example\\.com|example\\.co\\.uk)\\/.*$
 
+# Block các blob từ domain example.com
+bl:blob:^https?:\\/\\/(example\\.com|example\\.co\\.uk)\\/blocked.*
+</code></pre>
                 <h3>Bypass Anti-DevTool</h3>
                 <p>API tự động tiêm một kịch bản vào trang web đích để vô hiệu hóa các kỹ thuật phổ biến mà trang web dùng để phát hiện và ngăn chặn các công cụ tự động. Kịch bản này sẽ:</p>
                 <ul>
@@ -684,6 +702,48 @@ regex:blob:example\\.com</code></pre>
                     <li>Ngăn chặn các cơ chế phát hiện dựa trên <code>toString()</code> của hàm.</li>
                 </ul>
                 <p>Tính năng này giúp tăng đáng kể tỉ lệ thành công trên các trang web có cơ chế bảo vệ cao.</p>
+            </div>
+            <h2>nodetext - Hướng Dẫn Sử Dụng API</h2>
+            <div class="section">
+                <h3>Ghi chú:</h3>
+                <p>Dịch vụ đơn giản để lưu trữ các đoạn text tạm thời hoặc vĩnh viễn qua API.</p>
+                <h3>UPLOAD MỘT FILE</h3>
+                <p>Gửi một request POST đến URL với tên file bạn mong muốn.</p>
+                <ul>
+                    <li><strong>Method:</strong> POST</li>
+                    <li><strong>URL:</strong>    /ten-file-cua-ban.txt</li>
+                    <li><strong>Body:</strong>   JSON</li>
+                </ul>
+                <p><strong>CÁC THAM SỐ TRONG BODY:</strong></p>
+                <ul>
+                    <li><code>data</code> (bắt buộc): Nội dung text thô bạn muốn lưu trữ.</li>
+                    <li><code>exp</code> (tùy chọn): Thời gian hết hạn. Nếu bỏ qua, file sẽ được lưu vĩnh viễn.
+                        <ul>
+                            <li>Định dạng: <s> (giây), <m> (phút), <h> (giờ), <d> (ngày), <mo> (tháng), <y> (năm).</li>
+                            <li>Ví dụ: "60s", "30m", "12h", "7d", "1mo", "2y".</li>
+                        </ul>
+                    </li>
+                </ul>
+                <p><strong>PHẢN HỒI (RESPONSE):</strong></p>
+                <p>API sẽ trả về một URL dạng text thô đến file vừa được tạo.</p>
+                <p><strong>VÍ DỤ (sử dụng curl):</strong></p>
+<pre><code># Tạo file hết hạn sau 5 phút
+curl -X POST http://localhost:10000/vidu.txt \\
+-H "Content-Type: application/json" \\
+-d '{ "data": "Đây là một bài test.", "exp": "5m" }'
+
+# Tạo file vĩnh viễn
+curl -X POST http://localhost:10000/vinhvien.txt \\
+-H "Content-Type: application/json" \\
+-d '{ "data": "Nội dung này không bao giờ hết hạn." }'
+</code></pre>
+                <h3>TRUY CẬP FILE</h3>
+                <p>Thực hiện một request GET đến URL được trả về từ API upload.</p>
+                <ul>
+                    <li><strong>Method:</strong> GET</li>
+                    <li><strong>URL:</strong>    /<chuoi-ngau-nhien>/ten-file-cua-ban.txt</li>
+                </ul>
+                <p>và bỏ qua phần check file coi có phải m3u8 hay ko</p>
             </div>
         </main>
     </div>
